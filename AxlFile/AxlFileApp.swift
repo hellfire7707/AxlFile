@@ -1,0 +1,44 @@
+import SwiftUI
+
+@main
+struct AxlFileApp: App {
+    @State private var appState = AppState()
+
+    var body: some Scene {
+        WindowGroup {
+            ContentView()
+                .environment(appState)
+        }
+        .defaultSize(width: 1100, height: 660)
+        .commands {
+            CommandGroup(replacing: .newItem) {}
+            CommandMenu("파일") {
+                Button("새 폴더") { appState.showNewFolder = true }
+                    .keyboardShortcut("n", modifiers: [.command, .shift])
+                Divider()
+                Button("파일 복사 (반대 패널)") { appState.copySelectionToOpposite() }
+                Button("파일 이동 (반대 패널)") { appState.moveSelectionToOpposite() }
+                Button("삭제") { appState.deleteSelection() }
+                Divider()
+                Button("FTP 연결...") { appState.showFTP = true }
+            }
+            CommandMenu("보기") {
+                Button("숨김 파일 표시/숨기기") {
+                    appState.showHidden.toggle()
+                    Task {
+                        await appState.reload(pane: appState.leftPane)
+                        await appState.reload(pane: appState.rightPane)
+                    }
+                }
+                .keyboardShortcut(".", modifiers: .command)
+                Button("새로고침") {
+                    Task {
+                        await appState.reload(pane: appState.leftPane)
+                        await appState.reload(pane: appState.rightPane)
+                    }
+                }
+                .keyboardShortcut("r", modifiers: .command)
+            }
+        }
+    }
+}
