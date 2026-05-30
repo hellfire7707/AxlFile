@@ -13,6 +13,8 @@ struct AxlFileApp: App {
         .commands {
             CommandGroup(replacing: .newItem) {}
             CommandMenu("파일") {
+                Button("새 파일") { appState.newFileName = ""; appState.showNewFile = true }
+                    .keyboardShortcut("n", modifiers: .command)
                 Button("새 폴더") { appState.showNewFolder = true }
                     .keyboardShortcut("n", modifiers: [.command, .shift])
                 Divider()

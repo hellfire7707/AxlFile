@@ -22,6 +22,8 @@ class AppState {
     // 다이얼로그
     var showNewFolder = false
     var newFolderName = ""
+    var showNewFile = false
+    var newFileName = ""
     var showRename = false
     var renameText = ""
     var showProperties = false
@@ -128,6 +130,31 @@ class AppState {
                 statusMessage = "오류: \(error.localizedDescription)"
             }
         }
+    }
+
+    func createFile() {
+        guard let tab = activePane.activeTab else { return }
+        let name = newFileName.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else { return }
+        Task {
+            do {
+                let dst = tab.url.appendingPathComponent(name)
+                guard !FileManager.default.fileExists(atPath: dst.path) else {
+                    statusMessage = "이미 존재하는 파일: \(name)"
+                    return
+                }
+                FileManager.default.createFile(atPath: dst.path, contents: nil)
+                await reload(pane: activePane)
+                // 생성된 파일로 커서 이동
+                if let created = tab.files.first(where: { $0.name == name }) {
+                    tab.cursorID = created.id
+                }
+                statusMessage = "파일 생성: \(name)"
+            } catch {
+                statusMessage = "오류: \(error.localizedDescription)"
+            }
+        }
+        newFileName = ""
     }
 
     func createFolder() {

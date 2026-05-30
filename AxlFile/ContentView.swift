@@ -17,6 +17,9 @@ struct ContentView: View {
         .sheet(isPresented: Binding(get: { appState.showNewFolder }, set: { appState.showNewFolder = $0 })) {
             NewFolderDialog().environment(appState)
         }
+        .sheet(isPresented: Binding(get: { appState.showNewFile }, set: { appState.showNewFile = $0 })) {
+            NewFileDialog().environment(appState)
+        }
         .sheet(isPresented: Binding(get: { appState.showRename }, set: { appState.showRename = $0 })) {
             RenameDialog().environment(appState)
         }
@@ -318,6 +321,48 @@ struct WorkingOverlay: View {
             .padding(24)
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
         }
+    }
+}
+
+// MARK: - New File Dialog
+
+struct NewFileDialog: View {
+    @Environment(AppState.self) private var appState
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        VStack(spacing: 16) {
+            HStack(spacing: 10) {
+                Image(systemName: "doc.badge.plus")
+                    .font(.title2)
+                    .foregroundStyle(NX.folderText)
+                Text("새 파일 만들기").font(.headline)
+            }
+            TextField("파일 이름 (예: memo.txt)", text: Binding(
+                get: { appState.newFileName },
+                set: { appState.newFileName = $0 }
+            ))
+            .focused($focused)
+            .textFieldStyle(.roundedBorder)
+            .frame(width: 300)
+            .onSubmit { confirm() }
+            HStack {
+                Button("취소") { appState.showNewFile = false }
+                    .keyboardShortcut(.escape)
+                Button("만들기") { confirm() }
+                    .keyboardShortcut(.return)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(appState.newFileName.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+        .padding(24)
+        .onAppear { focused = true }
+    }
+
+    private func confirm() {
+        guard !appState.newFileName.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+        appState.createFile()
+        appState.showNewFile = false
     }
 }
 

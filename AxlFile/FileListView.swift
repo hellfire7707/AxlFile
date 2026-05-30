@@ -112,6 +112,10 @@ struct FileListView: View {
         case _ where press.modifiers.contains(.command) && press.characters == "a":
             tab.selectedIDs = Set(files.map { $0.id })
             return .handled
+        case _ where press.modifiers.contains(.command) && press.characters == "n":
+            appState.newFileName = ""
+            appState.showNewFile = true
+            return .handled
         case _ where press.modifiers.contains(.command) && press.characters == "t":
             currentPane.addTab(url: tab.url)
             Task { if let t = currentPane.activeTab {
