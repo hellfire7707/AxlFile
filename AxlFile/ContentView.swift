@@ -201,27 +201,32 @@ struct FileInfoBar: View {
 
 struct FunctionKeyBar: View {
     @Environment(AppState.self) private var appState
-
-    private let keys: [(String, String, () -> Void)] = []  // placeholder — built in body
+    @State private var showQuitConfirm = false
 
     var body: some View {
         GeometryReader { geo in
             HStack(spacing: 0) {
-                fKey("F2", "Rename") {
+                // F2 이름 변경 — 커서 파일 없으면 비활성
+                fKey("F2", "Rename", disabled: appState.activePane.activeTab?.cursorFile == nil) {
                     if let item = appState.activePane.activeTab?.cursorFile {
                         appState.renameText = item.name
                         appState.showRename = true
                     }
                 }
                 div()
-                fKey("F3", "View") {
+                // F3 보기 — 파일일 때만 활성
+                fKey("F3", "View", disabled: {
+                    guard let item = appState.activePane.activeTab?.cursorFile else { return true }
+                    return item.isDirectory || !item.isViewable
+                }()) {
                     if let item = appState.activePane.activeTab?.cursorFile, !item.isDirectory {
                         appState.viewerURL = item.url
                         appState.showViewer = true
                     }
                 }
                 div()
-                fKey("F4", "Edit") {
+                // F4 편집 — 파일일 때만 활성
+                fKey("F4", "Edit", disabled: appState.activePane.activeTab?.cursorFile?.isDirectory == true) {
                     if let item = appState.activePane.activeTab?.cursorFile {
                         NSWorkspace.shared.open(item.url)
                     }
@@ -236,36 +241,48 @@ struct FunctionKeyBar: View {
                     appState.showNewFolder = true
                 }
                 div()
-                fKey("F8", "Delete")   { appState.deleteSelection() }
+                // F8 삭제 — 선택/커서 없으면 비활성
+                fKey("F8", "Delete",
+                     disabled: appState.activePane.activeTab?.effectiveSelections.isEmpty == true
+                ) {
+                    appState.deleteSelection()
+                }
                 div()
-                fKey("F9", "FTP")      { appState.showFTP = true }
+                fKey("F9", "FTP") { appState.showFTP = true }
                 div()
-                fKey("F10", "Quit")    { NSApplication.shared.terminate(nil) }
+                fKey("F10", "Quit") { showQuitConfirm = true }
             }
             .frame(width: geo.size.width, height: 26)
         }
         .frame(height: 26)
         .background(Color(hex: "#161616"))
         .overlay(alignment: .top) { Rectangle().frame(height: 1).foregroundStyle(NX.separator) }
+        .confirmationDialog("AxlFile를 종료하시겠습니까?", isPresented: $showQuitConfirm) {
+            Button("종료", role: .destructive) { NSApplication.shared.terminate(nil) }
+            Button("취소", role: .cancel) {}
+        }
     }
 
-    // 버튼: F키 번호(황금) + 레이블(흰색) — 탭 영역 클릭 가능
+    // F키 버튼: 번호(황금) + 레이블(흰색), disabled 시 흐리게
     @ViewBuilder
-    private func fKey(_ key: String, _ label: String, action: @escaping () -> Void) -> some View {
+    private func fKey(_ key: String, _ label: String,
+                      disabled: Bool = false,
+                      action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 4) {
                 Text(key)
                     .font(.system(size: 11, weight: .bold))
-                    .foregroundStyle(NX.folderText)  // 황금색
+                    .foregroundStyle(disabled ? NX.attrText : NX.folderText)
                 Text(label)
                     .font(.system(size: 11))
-                    .foregroundStyle(NX.fkeyText)
+                    .foregroundStyle(disabled ? NX.attrText : NX.fkeyText)
                     .lineLimit(1)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .disabled(disabled)
     }
 
     // 구분선 |

@@ -9,6 +9,9 @@ struct FileListView: View {
     var isActive: Bool
     var focusedPane: FocusState<PaneID?>.Binding
 
+    // Shift 범위 선택의 기준점
+    @State private var anchorID: UUID?
+
     private var files: [FileItem] { tab.displayFiles(showHidden: appState.showHidden) }
 
     var body: some View {
@@ -33,6 +36,7 @@ struct FileListView: View {
                                 focusedPane.wrappedValue = paneID
                                 tab.cursorID    = item.id
                                 tab.selectedIDs = []
+                                anchorID        = nil
                             }
                             .simultaneousGesture(TapGesture(count: 2).onEnded {
                                 openItem(item)
@@ -67,12 +71,26 @@ struct FileListView: View {
 
     private func handleKey(_ press: KeyPress) -> KeyPress.Result {
         switch press.key {
-        case .upArrow:   moveCursor(by: -1);  return .handled
-        case .downArrow: moveCursor(by:  1);  return .handled
-        case .pageUp:    moveCursor(by: -20); return .handled
-        case .pageDown:  moveCursor(by:  20); return .handled
-        case .home:      setCursor(files.first);  return .handled
-        case .end:       setCursor(files.last);   return .handled
+        case .upArrow:
+            if press.modifiers.contains(.shift) {
+                shiftSelect(by: -1)
+            } else {
+                anchorID = nil
+                moveCursor(by: -1)
+            }
+            return .handled
+        case .downArrow:
+            if press.modifiers.contains(.shift) {
+                shiftSelect(by: 1)
+            } else {
+                anchorID = nil
+                moveCursor(by: 1)
+            }
+            return .handled
+        case .pageUp:    anchorID = nil; moveCursor(by: -20); return .handled
+        case .pageDown:  anchorID = nil; moveCursor(by:  20); return .handled
+        case .home:      anchorID = nil; setCursor(files.first);  return .handled
+        case .end:       anchorID = nil; setCursor(files.last);   return .handled
         case .return:
             if let item = tab.cursorFile { openItem(item) }
             return .handled
@@ -108,24 +126,45 @@ struct FileListView: View {
         // Backspace — 상위 폴더
         case "\u{7F}", "\u{8}": goUp(); return .handled
 
+        // ── F키 (macOS: F1=\u{F704}, F2=\u{F705}, F3=\u{F706}, ...) ──
         // F2 이름 변경
-        case "\u{F702}":
-            if let item = tab.cursorFile { appState.renameText = item.name; appState.showRename = true }
-            return .handled
-        // F3 보기
-        case "\u{F703}":
-            if let item = tab.cursorFile, !item.isDirectory {
-                appState.viewerURL = item.url; appState.showViewer = true
+        case "\u{F705}":
+            if let item = tab.cursorFile {
+                appState.renameText = item.name
+                appState.showRename = true
             }
             return .handled
-        // F5 복사
-        case "\u{F705}": appState.copySelectionToOpposite(); return .handled
-        // F6 이동
-        case "\u{F706}": appState.moveSelectionToOpposite(); return .handled
+
+        // F3 보기
+        case "\u{F706}":
+            if let item = tab.cursorFile, !item.isDirectory {
+                appState.viewerURL = item.url
+                appState.showViewer = true
+            }
+            return .handled
+
+        // F4 편집 (기본 앱으로)
+        case "\u{F707}":
+            if let item = tab.cursorFile { NSWorkspace.shared.open(item.url) }
+            return .handled
+
+        // F5 반대 패널로 복사
+        case "\u{F708}": appState.copySelectionToOpposite(); return .handled
+
+        // F6 반대 패널로 이동
+        case "\u{F709}": appState.moveSelectionToOpposite(); return .handled
+
         // F7 새 폴더
-        case "\u{F707}": appState.newFolderName = ""; appState.showNewFolder = true; return .handled
-        // F8 삭제
-        case "\u{F708}", "\u{F728}": appState.deleteSelection(); return .handled
+        case "\u{F70A}":
+            appState.newFolderName = ""
+            appState.showNewFolder = true
+            return .handled
+
+        // F8 삭제 (휴지통)  |  fn+Delete(Forward Delete) 도 동일
+        case "\u{F70B}", "\u{F728}": appState.deleteSelection(); return .handled
+
+        // F9 FTP
+        case "\u{F70C}": appState.showFTP = true; return .handled
 
         default: return .ignored
         }
@@ -145,6 +184,21 @@ struct FileListView: View {
     }
 
     private func setCursor(_ item: FileItem?) { tab.cursorID = item?.id }
+
+    // Shift+방향키: 앵커~커서 사이 범위 선택
+    private func shiftSelect(by delta: Int) {
+        guard !files.isEmpty else { return }
+        // 앵커가 없으면 현재 커서 위치로 설정
+        if anchorID == nil { anchorID = tab.cursorID ?? files.first?.id }
+        moveCursor(by: delta)
+        guard let anchorID,
+              let anchorIdx = files.firstIndex(where: { $0.id == anchorID }),
+              let cursorIdx = files.firstIndex(where: { $0.id == tab.cursorID })
+        else { return }
+        let lo = min(anchorIdx, cursorIdx)
+        let hi = max(anchorIdx, cursorIdx)
+        tab.selectedIDs = Set(files[lo...hi].map { $0.id })
+    }
 
     private func openItem(_ item: FileItem) {
         if item.isDirectory {

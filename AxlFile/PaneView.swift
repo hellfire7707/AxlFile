@@ -34,9 +34,6 @@ struct PaneView: View {
                     focusedPane: focusedPane
                 )
                 .environment(appState)
-
-                PaneFileInfoBar(tab: tab)
-                    .environment(appState)
             } else {
                 Spacer()
             }
