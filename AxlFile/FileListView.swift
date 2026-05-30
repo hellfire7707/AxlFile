@@ -54,13 +54,14 @@ struct FileListView: View {
                 }
             }
         }
+        .background(NX.listBg)
         .focusable()
         .focused(focusedPane, equals: paneID)
         .onKeyPress { handleKey($0) }
         .overlay {
             if tab.isLoading {
                 ZStack {
-                    Color(nsColor: .controlBackgroundColor).opacity(0.6)
+                    NX.listBg.opacity(0.8)
                     ProgressView()
                 }
             }

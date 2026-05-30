@@ -9,8 +9,6 @@ struct ContentView: View {
                 .environment(appState)
             DualPaneView()
                 .environment(appState)
-            FileInfoBar()
-                .environment(appState)
             FunctionKeyBar()
                 .environment(appState)
         }

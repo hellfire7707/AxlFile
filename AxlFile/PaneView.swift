@@ -34,6 +34,8 @@ struct PaneView: View {
                     focusedPane: focusedPane
                 )
                 .environment(appState)
+
+                PaneFileInfoBar(tab: tab)
             } else {
                 Spacer()
             }
@@ -280,48 +282,61 @@ struct FolderInfoBar: View {
     }
 }
 
-// MARK: - Pane File Info Bar
+// MARK: - Pane File Info Bar  ── 67,584 | 2026-04-13 23:52 | ___ | filename
 
 struct PaneFileInfoBar: View {
-    @Environment(AppState.self) private var appState
     var tab: TabInfo
 
     var body: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 0) {
             if !tab.selectedIDs.isEmpty {
+                // 다중 선택: N개 선택 | 합계 크기
                 let sel     = tab.files.filter { tab.selectedIDs.contains($0.id) }
                 let selSize = sel.reduce(Int64(0)) { $0 + $1.size }
-                Text("\(sel.count)개 선택").foregroundStyle(NX.selected)
-                sep()
-                Text(ByteCountFormatter.string(fromByteCount: selSize, countStyle: .file))
+                let szStr = { let f = NumberFormatter(); f.numberStyle = .decimal; return f.string(from: NSNumber(value: selSize)) ?? "\(selSize)" }()
+                Text("\(sel.count)개 선택")
+                    .foregroundStyle(NX.selected)
+                    .font(.system(size: 11))
+                pipe()
+                Text("\(szStr) B")
                     .foregroundStyle(NX.sizeText)
+                    .font(.system(size: 11))
             } else if let item = tab.cursorFile {
+                // 단일 커서: size | date | attr | name
                 if !item.isDirectory {
-                    Text(item.sizeString).foregroundStyle(NX.sizeText)
-                    sep()
-                    Text(item.dateString).foregroundStyle(NX.dateText)
-                    sep()
+                    Text(item.sizeBytesFormatted)
+                        .foregroundStyle(NX.infoText)
+                        .font(.system(size: 11))
+                    pipe()
+                    Text(item.infoDateString)
+                        .foregroundStyle(NX.infoText)
+                        .font(.system(size: 11))
+                    pipe()
                     Text(item.attrString)
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(NX.attrText)
-                    sep()
+                        .foregroundStyle(NX.folderText)
+                        .font(.system(size: 11, design: .monospaced))
+                    pipe()
                 }
                 Text(item.name)
                     .foregroundStyle(NX.fileText)
-                    .lineLimit(1).truncationMode(.middle)
+                    .font(.system(size: 11))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
             } else {
-                Text(" ")
+                Text(" ").font(.system(size: 11))
             }
             Spacer()
         }
-        .font(.system(size: 10))
         .padding(.horizontal, 8)
         .padding(.vertical, 3)
+        .frame(height: 22)
         .background(NX.infoBg)
-        .overlay(alignment: .top) { Divider() }
+        .overlay(alignment: .top) { Rectangle().frame(height: 1).foregroundStyle(NX.separator) }
     }
 
-    @ViewBuilder private func sep() -> some View {
-        Text("|").foregroundStyle(.quaternary)
+    @ViewBuilder private func pipe() -> some View {
+        Text("  |  ").font(.system(size: 11)).foregroundStyle(NX.separator)
     }
 }
+
+
