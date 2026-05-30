@@ -38,15 +38,31 @@ struct FileItem: Identifiable, Hashable {
 
     var attrString: String {
         var s = ""
-        s += isHidden  ? "H" : "·"
-        s += isSymlink ? "L" : "·"
+        s += isHidden  ? "H" : "_"
+        s += isSymlink ? "L" : "_"
+        s += FileManager.default.isExecutableFile(atPath: url.path) && !isDirectory ? "X" : "_"
         return s
     }
+
+    // 파일 정보 바용: 쉼표 구분 바이트 수
+    var sizeBytesFormatted: String {
+        guard !isDirectory else { return "<DIR>" }
+        return FileItem.numFmt.string(from: NSNumber(value: size)) ?? "\(size)"
+    }
+
+    private static let numFmt: NumberFormatter = {
+        let f = NumberFormatter(); f.numberStyle = .decimal; return f
+    }()
 
     private static let dateFmt: DateFormatter = {
         let f = DateFormatter(); f.dateFormat = "yy-MM-dd HH:mm"; return f
     }()
-    var dateString: String { FileItem.dateFmt.string(from: modificationDate) }
+    // 파일 정보 바용: 4자리 연도
+    private static let infoDateFmt: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd HH:mm"; return f
+    }()
+    var dateString: String     { FileItem.dateFmt.string(from: modificationDate) }
+    var infoDateString: String { FileItem.infoDateFmt.string(from: modificationDate) }
 
     var sfSymbol: String {
         if isDirectory { return "folder.fill" }

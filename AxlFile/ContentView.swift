@@ -138,127 +138,150 @@ struct ToolbarView: View {
     }
 }
 
-// MARK: - File Info Bar (글로벌 상태바)
+// MARK: - File Info Bar  ── 67,584 | 2013-03-10 16:43 | A_S | bootstat.dat
 
 struct FileInfoBar: View {
     @Environment(AppState.self) private var appState
 
     var body: some View {
-        HStack(spacing: 6) {
-            // 활성 패널 커서 파일 정보 — Nexus File 하단 표시줄 스타일
+        HStack(spacing: 0) {
             if let tab = appState.activePane.activeTab {
                 if !tab.selectedIDs.isEmpty {
+                    // 다중 선택 상태
                     let sel = tab.files.filter { tab.selectedIDs.contains($0.id) }
                     let sz  = sel.reduce(Int64(0)) { $0 + $1.size }
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(NX.selected)
-                        .font(.system(size: 10))
-                    Text("\(sel.count)개 선택")
-                        .foregroundStyle(NX.selected)
-                    sep()
-                    Text(ByteCountFormatter.string(fromByteCount: sz, countStyle: .file))
-                        .foregroundStyle(NX.sizeText)
+                    let szStr = NumberFormatter().apply { $0.numberStyle = .decimal }
+                              .string(from: NSNumber(value: sz)) ?? "\(sz)"
+                    infoText("\(sel.count)개 선택")
+                    pipe()
+                    infoText(szStr + " B")
                 } else if let item = tab.cursorFile {
-                    Image(systemName: item.sfSymbol)
-                        .foregroundStyle(item.isDirectory ? NX.folderIcon : NX.fileIcon)
-                        .font(.system(size: 10))
+                    // Nexus File 스타일: 67,584 | 2013-03-10 16:43 | A_S | bootstat.dat
                     if !item.isDirectory {
-                        Text(item.sizeString).foregroundStyle(NX.sizeText)
-                        sep()
-                        Text(item.dateString).foregroundStyle(NX.dateText)
-                        sep()
+                        infoText(item.sizeBytesFormatted)
+                        pipe()
+                        infoText(item.infoDateString)
+                        pipe()
                         Text(item.attrString)
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundStyle(NX.attrText)
-                        sep()
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(NX.folderText)  // 황금색
+                        pipe()
                     }
                     Text(item.name)
+                        .font(.system(size: 11))
                         .foregroundStyle(NX.fileText)
-                        .lineLimit(1).truncationMode(.middle)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
                 }
             }
             Spacer()
             if !appState.statusMessage.isEmpty {
                 Text(appState.statusMessage)
+                    .font(.system(size: 11))
                     .foregroundStyle(NX.infoText)
-                    .transition(.opacity)
             }
         }
-        .font(.system(size: 11))
         .padding(.horizontal, 10)
-        .padding(.vertical, 3)
+        .padding(.vertical, 4)
+        .frame(height: 22)
         .background(NX.infoBg)
-        .overlay(alignment: .top)    { Rectangle().frame(height: 1).foregroundStyle(NX.separator) }
-        .overlay(alignment: .bottom) { Rectangle().frame(height: 1).foregroundStyle(NX.separator) }
+        .overlay(alignment: .top) { Rectangle().frame(height: 1).foregroundStyle(NX.separator) }
     }
 
-    @ViewBuilder private func sep() -> some View {
-        Text("|").foregroundStyle(NX.separator)
+    @ViewBuilder private func infoText(_ s: String) -> some View {
+        Text(s).font(.system(size: 11)).foregroundStyle(NX.infoText)
+    }
+
+    @ViewBuilder private func pipe() -> some View {
+        Text("  |  ").font(.system(size: 11)).foregroundStyle(NX.separator)
     }
 }
 
-// MARK: - Function Key Bar (하단 F키 버튼)
+// MARK: - Function Key Bar  ── F2 Rename | F3 Copy To | F4 Move To ...
 
 struct FunctionKeyBar: View {
     @Environment(AppState.self) private var appState
 
+    private let keys: [(String, String, () -> Void)] = []  // placeholder — built in body
+
     var body: some View {
-        HStack(spacing: 2) {
-            fKey("F2", "이름변경") {
-                if let item = appState.activePane.activeTab?.cursorFile {
-                    appState.renameText = item.name
-                    appState.showRename = true
+        GeometryReader { geo in
+            HStack(spacing: 0) {
+                fKey("F2", "Rename") {
+                    if let item = appState.activePane.activeTab?.cursorFile {
+                        appState.renameText = item.name
+                        appState.showRename = true
+                    }
                 }
-            }
-            fKey("F3", "보기") {
-                if let item = appState.activePane.activeTab?.cursorFile, !item.isDirectory {
-                    appState.viewerURL = item.url
-                    appState.showViewer = true
+                div()
+                fKey("F3", "View") {
+                    if let item = appState.activePane.activeTab?.cursorFile, !item.isDirectory {
+                        appState.viewerURL = item.url
+                        appState.showViewer = true
+                    }
                 }
-            }
-            fKey("F4", "편집") {
-                if let item = appState.activePane.activeTab?.cursorFile {
-                    NSWorkspace.shared.open(item.url)
+                div()
+                fKey("F4", "Edit") {
+                    if let item = appState.activePane.activeTab?.cursorFile {
+                        NSWorkspace.shared.open(item.url)
+                    }
                 }
+                div()
+                fKey("F5", "Copy To")  { appState.copySelectionToOpposite() }
+                div()
+                fKey("F6", "Move To")  { appState.moveSelectionToOpposite() }
+                div()
+                fKey("F7", "New Folder") {
+                    appState.newFolderName = ""
+                    appState.showNewFolder = true
+                }
+                div()
+                fKey("F8", "Delete")   { appState.deleteSelection() }
+                div()
+                fKey("F9", "FTP")      { appState.showFTP = true }
+                div()
+                fKey("F10", "Quit")    { NSApplication.shared.terminate(nil) }
             }
-            fKey("F5", "복사") { appState.copySelectionToOpposite() }
-            fKey("F6", "이동")  { appState.moveSelectionToOpposite() }
-            fKey("F7", "새폴더") {
-                appState.newFolderName = ""
-                appState.showNewFolder = true
-            }
-            fKey("F8", "삭제") { appState.deleteSelection() }
-            fKey("F9", "FTP")  { appState.showFTP = true }
-            fKey("F10","종료")  { NSApplication.shared.terminate(nil) }
+            .frame(width: geo.size.width, height: 26)
         }
-        .padding(.horizontal, 4)
-        .padding(.vertical, 4)
-        .background(NX.fkeyBg)
+        .frame(height: 26)
+        .background(Color(hex: "#161616"))
+        .overlay(alignment: .top) { Rectangle().frame(height: 1).foregroundStyle(NX.separator) }
     }
 
+    // 버튼: F키 번호(황금) + 레이블(흰색) — 탭 영역 클릭 가능
     @ViewBuilder
     private func fKey(_ key: String, _ label: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            HStack(spacing: 3) {
+            HStack(spacing: 4) {
                 Text(key)
-                    .font(.system(size: 9, weight: .bold, design: .rounded))
-                    .foregroundStyle(NX.fkeyNum)
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(NX.folderText)  // 황금색
                 Text(label)
                     .font(.system(size: 11))
                     .foregroundStyle(NX.fkeyText)
                     .lineLimit(1)
             }
-            .frame(maxWidth: .infinity)
-            .frame(height: 24)
-            .padding(.horizontal, 4)
-            .background(NX.fkeyBtnBg)
-            .clipShape(RoundedRectangle(cornerRadius: 4))
-            .overlay {
-                RoundedRectangle(cornerRadius: 4)
-                    .strokeBorder(NX.fkeyBtnBorder, lineWidth: 0.5)
-            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+
+    // 구분선 |
+    @ViewBuilder
+    private func div() -> some View {
+        Text("|")
+            .font(.system(size: 11))
+            .foregroundStyle(NX.separator)
+            .frame(width: 12, height: 26)
+    }
+}
+
+// NumberFormatter 체이닝 헬퍼
+extension NumberFormatter {
+    func apply(_ configure: (NumberFormatter) -> Void) -> NumberFormatter {
+        configure(self); return self
     }
 }
 
