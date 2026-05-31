@@ -1,6 +1,6 @@
 # AxlFile
 
-macOS용 듀얼패널 파일 매니저. Nexus File 스타일의 키보드 중심 인터페이스를 제공합니다.
+macOS용 듀얼패널 파일 매니저. 키보드 중심 인터페이스를 제공합니다.
 
 ![AxlFile Screenshot](assets/screenshot.png)
 
