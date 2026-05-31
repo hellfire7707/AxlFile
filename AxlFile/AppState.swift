@@ -45,6 +45,7 @@ class AppState {
     var workDestPath    = ""    // 목적지 경로
     var workBytes:      Int64 = 0  // 누적 처리 바이트
     var workFileCount   = 0    // 처리된 파일 수
+    var workTotalCount  = 0    // 전체 대상 파일 수
     var workCancelled   = false
     private(set) var currentOperationMgr: FileOperationManager?
 
@@ -185,7 +186,7 @@ class AppState {
         isWorking = true; workCancelled = false
         workProgress = 0; workMessage = message
         workCurrentFile = ""; workSourcePath = ""; workDestPath = ""
-        workBytes = 0; workFileCount = 0
+        workBytes = 0; workFileCount = 0; workTotalCount = 0
     }
 
     private func updateWorkItem(_ item: FileItem, index: Int, total: Int,
@@ -196,6 +197,58 @@ class AppState {
         workFileCount   = index + 1
         workBytes      += item.size
         workProgress    = Double(index + 1) / Double(total)
+    }
+
+    // 로컬 파일을 재귀적으로 수집 (업로드용)
+    // 결과: [(localURL, remotePath, isDir, size)]
+    private func collectLocalForUpload(url: URL, remote: String,
+                                       into list: inout [(URL, String, Bool, Int64)]) {
+        var isDir: ObjCBool = false
+        FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir)
+        if isDir.boolValue {
+            list.append((url, remote, true, 0))
+            let children = (try? FileManager.default.contentsOfDirectory(
+                at: url, includingPropertiesForKeys: [.fileSizeKey])) ?? []
+            for child in children {
+                collectLocalForUpload(url: child,
+                                      remote: remote + "/" + child.lastPathComponent,
+                                      into: &list)
+            }
+        } else {
+            let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize)
+                .map { Int64($0) } ?? 0
+            list.append((url, remote, false, size))
+        }
+    }
+
+    // SFTP 경로를 재귀적으로 수집 (다운로드용)
+    // 결과: [(remotePath, localURL, isDir, size)]
+    private func collectSFTPForDownload(client: SFTPClient, remotePath: String,
+                                        localURL: URL, isDir: Bool, size: Int64,
+                                        into list: inout [(String, URL, Bool, Int64)]) throws {
+        list.append((remotePath, localURL, isDir, size))
+        if isDir {
+            let children = try client.list(path: remotePath)
+            for child in children {
+                try collectSFTPForDownload(client: client,
+                                           remotePath: child.path,
+                                           localURL: localURL.appendingPathComponent(child.name),
+                                           isDir: child.isDirectory,
+                                           size: child.size,
+                                           into: &list)
+            }
+        }
+    }
+
+    private func updateSFTPProgress(name: String, src: String, dst: String,
+                                    size: Int64, fileCount: inout Int, total: Int) {
+        workCurrentFile = name
+        workSourcePath  = src
+        workDestPath    = dst
+        workBytes      += size
+        fileCount      += 1
+        workFileCount   = fileCount
+        workProgress    = total > 0 ? Double(fileCount) / Double(total) : 0
     }
 
     func cancelWork() {
@@ -224,6 +277,7 @@ class AppState {
                         op: move ? .move : .copy,
                         items: items.map { $0.url },
                         destination: dstTab.url,
+                        onTotal: { [weak self] t in self?.workTotalCount = t },
                         onFile: { [weak self] name, src, dst, size in
                             self?.workCurrentFile = name
                             self?.workSourcePath  = src
@@ -234,39 +288,68 @@ class AppState {
                         progress: { [weak self] p in self?.workProgress = p }
                     )
                 } else if !srcIsSFTP, let dstClient = dstTab.sftpClient {
-                    // 로컬 → SFTP (업로드)
+                    // 로컬 → SFTP (업로드): 파일 단위 재귀 전송
                     let dstPath = dstTab.url.path
-                    workSourcePath = srcTab.url.path
-                    workDestPath   = dstPath
-                    for (i, item) in items.enumerated() {
-                        guard !workCancelled else { break }
-                        let rp = remotePath(dstPath, name: item.name)
-                        updateWorkItem(item, index: i, total: items.count,
-                                       srcPath: item.url.path, dstPath: rp)
-                        try await Task.detached {
-                            try dstClient.upload(localURL: item.url, remotePath: rp)
-                        }.value
-                        if move { try FileManager.default.removeItem(at: item.url) }
+                    var uploadTasks: [(URL, String, Bool, Int64)] = []
+                    for item in items {
+                        collectLocalForUpload(url: item.url,
+                                              remote: remotePath(dstPath, name: item.name),
+                                              into: &uploadTasks)
                     }
+                    let fileTotal = uploadTasks.filter { !$0.2 }.count
+                    workTotalCount = fileTotal
+                    var fileCount = 0
+                    for (localURL, remPath, isDir, size) in uploadTasks {
+                        guard !workCancelled else { break }
+                        if isDir {
+                            let rp = remPath
+                            await Task.detached { dstClient.mkdir(remotePath: rp) }.value
+                        } else {
+                            updateSFTPProgress(name: localURL.lastPathComponent,
+                                               src: localURL.path, dst: remPath,
+                                               size: size, fileCount: &fileCount, total: fileTotal)
+                            let local = localURL, remote = remPath
+                            try await Task.detached { try dstClient.upload(localURL: local, remotePath: remote) }.value
+                            if move { try? FileManager.default.removeItem(at: localURL) }
+                        }
+                    }
+                    if move { for item in items { try? FileManager.default.removeItem(at: item.url) } }
+
                 } else if let srcClient = srcTab.sftpClient, !dstIsSFTP {
-                    // SFTP → 로컬 (다운로드)
+                    // SFTP → 로컬 (다운로드): 파일 단위 재귀 전송
                     let dstBase = dstTab.url
                     workSourcePath = srcTab.url.path
                     workDestPath   = dstBase.path
-                    for (i, item) in items.enumerated() {
-                        guard !workCancelled else { break }
-                        let localURL = dstBase.appendingPathComponent(item.name)
-                        let rp = item.url.path
-                        updateWorkItem(item, index: i, total: items.count,
-                                       srcPath: rp, dstPath: localURL.path)
+                    var downloadTasks: [(String, URL, Bool, Int64)] = []
+                    for item in items {
+                        let localDst = dstBase.appendingPathComponent(item.name)
+                        let c = srcClient
                         try await Task.detached {
-                            try srcClient.download(remotePath: rp, localURL: localURL)
+                            try self.collectSFTPForDownload(client: c,
+                                                            remotePath: item.url.path,
+                                                            localURL: localDst,
+                                                            isDir: item.isDirectory,
+                                                            size: item.size,
+                                                            into: &downloadTasks)
                         }.value
-                        if move {
-                            let isDir = item.isDirectory
-                            try await Task.detached {
-                                try srcClient.deleteItem(path: rp, isDirectory: isDir)
-                            }.value
+                    }
+                    let fileTotal = downloadTasks.filter { !$0.2 }.count
+                    workTotalCount = fileTotal
+                    var fileCount = 0
+                    for (remPath, localURL, isDir, size) in downloadTasks {
+                        guard !workCancelled else { break }
+                        if isDir {
+                            try? FileManager.default.createDirectory(at: localURL,
+                                                                     withIntermediateDirectories: true)
+                        } else {
+                            updateSFTPProgress(name: localURL.lastPathComponent,
+                                               src: remPath, dst: localURL.path,
+                                               size: size, fileCount: &fileCount, total: fileTotal)
+                            let rp = remPath, local = localURL
+                            try await Task.detached { try srcClient.download(remotePath: rp, localURL: local) }.value
+                            if move {
+                                try await Task.detached { try srcClient.deleteItem(path: rp, isDirectory: false) }.value
+                            }
                         }
                     }
                 } else if let srcClient = srcTab.sftpClient,
@@ -276,6 +359,7 @@ class AppState {
                     workDestPath   = dstPath
                     if srcClient === dstClient {
                         // SFTP → SFTP (같은 서버)
+                        workTotalCount = items.count
                         for (i, item) in items.enumerated() {
                             guard !workCancelled else { break }
                             let from = item.url.path
@@ -290,6 +374,7 @@ class AppState {
                         }
                     } else {
                         // SFTP → SFTP (다른 서버: 로컬 임시 경유)
+                        workTotalCount = items.count
                         let tmp = FileManager.default.temporaryDirectory
                         for (i, item) in items.enumerated() {
                             guard !workCancelled else { break }
@@ -317,9 +402,18 @@ class AppState {
 
                 await reload(pane: oppositePane)
                 if move { await reload(pane: activePane) }
+                srcTab.selectedIDs = []
                 statusMessage = move ? "이동 완료" : "복사 완료"
             } catch {
-                statusMessage = "오류: \(error.localizedDescription)"
+                // 취소 또는 오류 시에도 대상 위치 새로고침
+                await reload(pane: oppositePane)
+                if move { await reload(pane: activePane) }
+                srcTab.selectedIDs = []
+                if workCancelled {
+                    statusMessage = "취소됨"
+                } else {
+                    statusMessage = "오류: \(error.localizedDescription)"
+                }
             }
         }
     }
@@ -342,6 +436,7 @@ class AppState {
             currentOperationMgr = mgr
             try await mgr.perform(
                 op: op, items: items, destination: dst,
+                onTotal: { [weak self] t in self?.workTotalCount = t },
                 onFile: { [weak self] name, src, dstPath, size in
                     self?.workCurrentFile = name
                     self?.workSourcePath  = src
@@ -353,9 +448,16 @@ class AppState {
             )
             await reload(pane: destPane)
             if op == .move { clipboard = []; await reload(pane: activePane) }
+            dstTab.selectedIDs = []
+            activePane.activeTab?.selectedIDs = []
             statusMessage = op == .copy ? "복사 완료" : "이동 완료"
         } catch {
-            statusMessage = "오류: \(error.localizedDescription)"
+            // 취소 또는 오류 시에도 대상 위치 새로고침
+            await reload(pane: destPane)
+            if op == .move { await reload(pane: activePane) }
+            dstTab.selectedIDs = []
+            activePane.activeTab?.selectedIDs = []
+            statusMessage = workCancelled ? "취소됨" : "오류: \(error.localizedDescription)"
         }
     }
 
@@ -378,6 +480,7 @@ class AppState {
         if let client = tab.sftpClient {
             Task {
                 resetWorkState(message: "삭제 중...")
+                workTotalCount = items.count
                 defer {
                     isWorking = false; workProgress = 0; workMessage = ""
                     workCurrentFile = ""; workSourcePath = ""
@@ -396,8 +499,11 @@ class AppState {
                         }.value
                     }
                     await reload(pane: activePane)
-                    statusMessage = "삭제 완료"
+                    tab.selectedIDs = []
+                    statusMessage = workCancelled ? "취소됨" : "삭제 완료"
                 } catch {
+                    await reload(pane: activePane)
+                    tab.selectedIDs = []
                     statusMessage = "오류: \(error.localizedDescription)"
                 }
             }
@@ -406,6 +512,7 @@ class AppState {
 
         Task {
             resetWorkState(message: "삭제 중...")
+            workTotalCount = items.count
             defer {
                 isWorking = false; workProgress = 0; workMessage = ""
                 workCurrentFile = ""; workSourcePath = ""
@@ -426,8 +533,11 @@ class AppState {
                     progress: { [weak self] p in self?.workProgress = p }
                 )
                 await reload(pane: activePane)
-                statusMessage = "삭제 완료"
+                activePane.activeTab?.selectedIDs = []
+                statusMessage = workCancelled ? "취소됨" : "삭제 완료"
             } catch {
+                await reload(pane: activePane)
+                activePane.activeTab?.selectedIDs = []
                 statusMessage = "오류: \(error.localizedDescription)"
             }
         }

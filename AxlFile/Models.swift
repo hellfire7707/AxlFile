@@ -160,6 +160,7 @@ class TabInfo: Identifiable {
     var files: [FileItem] = []
     var selectedIDs: Set<UUID> = []
     var cursorID: UUID?
+    var driveCursorIndex: Int? = nil
     var sortField: SortField = .name
     var sortAscending = true
     var isLoading = false

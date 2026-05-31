@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 @main
 struct AxlFileApp: App {
@@ -11,6 +12,18 @@ struct AxlFileApp: App {
         }
         .defaultSize(width: 1100, height: 660)
         .commands {
+            CommandGroup(replacing: .appInfo) {
+                Button("AxlFile 정보...") {
+                    let credits = NSMutableAttributedString(
+                        string: "axlrator.co.kr",
+                        attributes: [
+                            .link: URL(string: "https://axlrator.co.kr")!,
+                            .font: NSFont.systemFont(ofSize: 13)
+                        ]
+                    )
+                    NSApp.orderFrontStandardAboutPanel(options: [.credits: credits])
+                }
+            }
             CommandGroup(replacing: .newItem) {}
             CommandMenu("파일") {
                 Button("새 파일") { appState.newFileName = ""; appState.showNewFile = true }

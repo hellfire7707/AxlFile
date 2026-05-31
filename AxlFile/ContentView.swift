@@ -319,7 +319,7 @@ struct WorkingOverlay: View {
 
     var body: some View {
         ZStack {
-            Color.black.opacity(0.25).ignoresSafeArea()
+            Color.black.opacity(0.6).ignoresSafeArea()
             WorkProgressPanel(appState: appState)
         }
     }
@@ -375,7 +375,9 @@ struct WorkProgressPanel: View {
                     Text(fmtBytes(appState.workBytes))
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundStyle(NX.infoText)
-                    Text("(\(appState.workFileCount))")
+                    Text(appState.workTotalCount > 0
+                         ? "\(appState.workFileCount) / \(appState.workTotalCount)"
+                         : "\(appState.workFileCount)")
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundStyle(NX.infoText)
                     Spacer()

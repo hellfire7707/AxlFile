@@ -13,66 +13,83 @@ struct FileListView: View {
 
     // Shift 범위 선택의 기준점
     @State private var anchorID: UUID?
-    // 드라이브 목록 & 드라이브 커서
+    // 드라이브 목록
     @State private var driveVolumes: [VolumeInfo] = []
-    @State private var driveCursorIndex: Int? = nil
 
     private var files: [FileItem] { tab.displayFiles(showHidden: appState.showHidden) }
 
+    private var columnCount: Int {
+        switch files.count {
+        case 0...50:    return 1
+        case 51...150:  return 2
+        case 151...300: return 3
+        default:        return 4
+        }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            ColumnHeaderView(tab: tab)
+            if columnCount <= 2 { ColumnHeaderView(tab: tab) }
 
             ScrollViewReader { proxy in
                 ScrollView {
-                    LazyVStack(spacing: 0) {
-                        ForEach(Array(files.enumerated()), id: \.element.id) { idx, item in
-                            FileRowView(
-                                item: item,
-                                rowIndex: idx,
-                                isSelected: tab.selectedIDs.contains(item.id),
-                                isCursor: tab.cursorID == item.id,
-                                isActive: isActive
-                            )
-                            .id(item.id)
-                            .contentShape(Rectangle())
-                            .onTapGesture {
-                                appState.activePaneID = paneID
-                                focusedPane.wrappedValue = paneID
-                                tab.cursorID     = item.id
-                                tab.selectedIDs  = []
-                                anchorID         = nil
-                                driveCursorIndex = nil
+                    if columnCount <= 2 {
+                        LazyVStack(spacing: 0) {
+                            ForEach(Array(files.enumerated()), id: \.element.id) { idx, item in
+                                FileRowView(
+                                    item: item,
+                                    rowIndex: idx,
+                                    isSelected: tab.selectedIDs.contains(item.id),
+                                    isCursor: tab.cursorID == item.id,
+                                    isActive: isActive
+                                )
+                                .id(item.id)
+                                .contentShape(Rectangle())
+                                .onTapGesture { selectItem(item) }
+                                .simultaneousGesture(TapGesture(count: 2).onEnded { openItem(item) })
+                                .contextMenu { rowContextMenu(for: item) }
                             }
-                            .simultaneousGesture(TapGesture(count: 2).onEnded {
-                                openItem(item)
-                            })
-                            .contextMenu { rowContextMenu(for: item) }
+                            // 1~2열 모드: 드라이브를 전체 너비 행으로
+                            ForEach(Array(driveVolumes.enumerated()), id: \.element.id) { idx, vol in
+                                DriveRowView(vol: vol, isCursor: idx == tab.driveCursorIndex) {
+                                    tapDrive(idx: idx, vol: vol)
+                                }
+                                .id("drive_\(idx)")
+                            }
                         }
-                    }
-                    DriveListFooter(volumes: driveVolumes, cursorIndex: driveCursorIndex) { vol in
-                        driveCursorIndex = driveVolumes.firstIndex { $0.id == vol.id }
-                        tab.cursorID = nil
-                        tab.selectedIDs = []
-                        appState.navigate(tab: tab, to: vol.url)
-                    } onVolumesLoaded: { loaded in
-                        driveVolumes = loaded
+                    } else {
+                        LazyVGrid(
+                            columns: Array(repeating: GridItem(.flexible(), spacing: 0), count: columnCount),
+                            spacing: 0
+                        ) {
+                            ForEach(Array(files.enumerated()), id: \.element.id) { idx, item in
+                                FileGridCellView(
+                                    item: item,
+                                    isSelected: tab.selectedIDs.contains(item.id),
+                                    isCursor: tab.cursorID == item.id,
+                                    isActive: isActive
+                                )
+                                .id(item.id)
+                                .contentShape(Rectangle())
+                                .onTapGesture { selectItem(item) }
+                                .simultaneousGesture(TapGesture(count: 2).onEnded { openItem(item) })
+                                .contextMenu { rowContextMenu(for: item) }
+                            }
+                            // 다열 모드: 드라이브도 그리드 셀 1개씩 차지
+                            ForEach(Array(driveVolumes.enumerated()), id: \.element.id) { idx, vol in
+                                DriveGridCellView(vol: vol, isCursor: idx == tab.driveCursorIndex) {
+                                    tapDrive(idx: idx, vol: vol)
+                                }
+                                .id("drive_\(idx)")
+                            }
+                        }
                     }
                 }
                 .onChange(of: tab.cursorID) { _, newID in
-                    if let id = newID {
-                        let anchor: UnitPoint = (id == files.first?.id) ? .top : .center
-                        withAnimation(.easeInOut(duration: 0.08)) {
-                            proxy.scrollTo(id, anchor: anchor)
-                        }
-                    }
+                    if let id = newID { proxy.scrollTo(id) }
                 }
-                .onChange(of: driveCursorIndex) { _, idx in
-                    if let idx {
-                        withAnimation(.easeInOut(duration: 0.08)) {
-                            proxy.scrollTo("drive_\(idx)", anchor: .center)
-                        }
-                    }
+                .onChange(of: tab.driveCursorIndex) { _, idx in
+                    if let idx { proxy.scrollTo("drive_\(idx)") }
                 }
             }
         }
@@ -80,6 +97,11 @@ struct FileListView: View {
         .focusable()
         .focused(focusedPane, equals: paneID)
         .onKeyPress { handleKey($0) }
+        .task { await loadDrives() }
+        .onReceive(NSWorkspace.shared.notificationCenter
+            .publisher(for: NSWorkspace.didMountNotification)) { _ in Task { await loadDrives() } }
+        .onReceive(NSWorkspace.shared.notificationCenter
+            .publisher(for: NSWorkspace.didUnmountNotification)) { _ in Task { await loadDrives() } }
         .overlay {
             if tab.isLoading {
                 ZStack {
@@ -92,40 +114,56 @@ struct FileListView: View {
 
     // MARK: - Key Handling
 
+    // LazyVStack(1~2열)은 1칸씩, LazyVGrid(3~4열)은 columnCount칸씩 이동
+    private var cursorStep: Int { columnCount <= 2 ? 1 : columnCount }
+
     private func handleKey(_ press: KeyPress) -> KeyPress.Result {
         switch press.key {
         case .upArrow:
             if press.modifiers.contains(.shift) {
-                shiftSelect(by: -1)
+                shiftSelect(by: -cursorStep)
             } else {
                 anchorID = nil
-                moveCursor(by: -1)
+                moveCursor(by: -cursorStep)
             }
             return .handled
         case .downArrow:
             if press.modifiers.contains(.shift) {
-                shiftSelect(by: 1)
+                shiftSelect(by: cursorStep)
             } else {
                 anchorID = nil
-                moveCursor(by: 1)
+                moveCursor(by: cursorStep)
             }
             return .handled
+        case .leftArrow where columnCount > 1:
+            anchorID = nil; moveCursor(by: -1); return .handled
+        case .rightArrow where columnCount > 1:
+            anchorID = nil; moveCursor(by: 1);  return .handled
         case .pageUp:    anchorID = nil; moveCursor(by: -20); return .handled
         case .pageDown:  anchorID = nil; moveCursor(by:  20); return .handled
         case .home:
-            anchorID = nil; driveCursorIndex = nil; setCursor(files.first); return .handled
-        case .end:
-            anchorID = nil
-            if !driveVolumes.isEmpty {
-                tab.cursorID = nil; driveCursorIndex = driveVolumes.count - 1
+            if press.modifiers.contains(.shift) {
+                shiftSelectToFirst()
             } else {
-                setCursor(files.last)
+                anchorID = nil; tab.driveCursorIndex = nil; setCursor(files.first)
+            }
+            return .handled
+        case .end:
+            if press.modifiers.contains(.shift) {
+                shiftSelectToLast()
+            } else {
+                anchorID = nil
+                if !driveVolumes.isEmpty {
+                    tab.cursorID = nil; tab.driveCursorIndex = driveVolumes.count - 1
+                } else {
+                    setCursor(files.last)
+                }
             }
             return .handled
         case .return:
-            if let di = driveCursorIndex, di < driveVolumes.count {
+            if let di = tab.driveCursorIndex, di < driveVolumes.count {
                 appState.navigate(tab: tab, to: driveVolumes[di].url)
-                driveCursorIndex = nil
+                tab.driveCursorIndex = nil
             } else if let item = tab.cursorFile {
                 openItem(item)
             }
@@ -205,20 +243,50 @@ struct FileListView: View {
 
     // MARK: - Helpers
 
+    private func selectItem(_ item: FileItem) {
+        appState.activePaneID = paneID
+        focusedPane.wrappedValue = paneID
+        tab.cursorID     = item.id
+        tab.selectedIDs  = []
+        anchorID         = nil
+        tab.driveCursorIndex = nil
+    }
+
+    private func tapDrive(idx: Int, vol: VolumeInfo) {
+        tab.driveCursorIndex = idx
+        tab.cursorID     = nil
+        tab.selectedIDs  = []
+        appState.navigate(tab: tab, to: vol.url)
+    }
+
+    private func loadDrives() async {
+        let keys: [URLResourceKey] = [.volumeNameKey, .volumeTotalCapacityKey,
+                                       .volumeAvailableCapacityKey]
+        let urls = FileManager.default.mountedVolumeURLs(
+            includingResourceValuesForKeys: keys, options: [.skipHiddenVolumes]) ?? []
+        driveVolumes = urls.compactMap { url -> VolumeInfo? in
+            let res = try? url.resourceValues(forKeys: Set(keys))
+            let name = res?.volumeName ?? url.lastPathComponent
+            let total = Int64(res?.volumeTotalCapacity ?? 0)
+            let free  = Int64(res?.volumeAvailableCapacity ?? 0)
+            return VolumeInfo(url: url, name: name, totalBytes: total, freeBytes: free)
+        }
+    }
+
     private var currentPane: PaneState {
         paneID == .left ? appState.leftPane : appState.rightPane
     }
 
     private func moveCursor(by delta: Int) {
         // 드라이브 커서 모드
-        if let di = driveCursorIndex {
+        if let di = tab.driveCursorIndex {
             let next = di + delta
             if next < 0 {
                 // 드라이브 위로 → 파일 목록 마지막으로
-                driveCursorIndex = nil
+                tab.driveCursorIndex = nil
                 tab.cursorID = files.last?.id
             } else {
-                driveCursorIndex = min(next, driveVolumes.count - 1)
+                tab.driveCursorIndex = min(next, driveVolumes.count - 1)
             }
             return
         }
@@ -228,7 +296,7 @@ struct FileListView: View {
         if next >= files.count, !driveVolumes.isEmpty {
             // 파일 아래로 → 드라이브 첫 항목으로
             tab.cursorID = nil
-            driveCursorIndex = 0
+            tab.driveCursorIndex = 0
         } else {
             tab.cursorID = files[max(0, min(files.count - 1, next))].id
         }
@@ -249,6 +317,29 @@ struct FileListView: View {
         let lo = min(anchorIdx, cursorIdx)
         let hi = max(anchorIdx, cursorIdx)
         tab.selectedIDs = Set(files[lo...hi].map { $0.id })
+    }
+
+    // Shift+End: 현재 위치 ~ 마지막까지 선택
+    private func shiftSelectToLast() {
+        guard !files.isEmpty else { return }
+        if anchorID == nil { anchorID = tab.cursorID ?? files.first?.id }
+        setCursor(files.last)
+        guard let anchorID,
+              let anchorIdx = files.firstIndex(where: { $0.id == anchorID })
+        else { return }
+        let hi = files.count - 1
+        tab.selectedIDs = Set(files[min(anchorIdx, hi)...hi].map { $0.id })
+    }
+
+    // Shift+Home: 처음 ~ 현재 위치까지 선택
+    private func shiftSelectToFirst() {
+        guard !files.isEmpty else { return }
+        if anchorID == nil { anchorID = tab.cursorID ?? files.last?.id }
+        setCursor(files.first)
+        guard let anchorID,
+              let anchorIdx = files.firstIndex(where: { $0.id == anchorID })
+        else { return }
+        tab.selectedIDs = Set(files[0...anchorIdx].map { $0.id })
     }
 
     private func openItem(_ item: FileItem) {
@@ -606,65 +697,95 @@ struct FileRowView: View {
     private var nameTint: Color {
         if isSelected { return NX.selectedText }
         if isCursor && isActive { return NX.cursorText }
-        // Finder처럼 폴더/파일 모두 동일한 텍스트 색상 (흰색 계열)
-        return NX.fileText
+        return item.isDirectory ? NX.folderText : NX.fileText
     }
 
     private var rowBg: some ShapeStyle {
-        if isSelected && isActive {
-            return AnyShapeStyle(NX.selected)
-        } else if isSelected {
-            return AnyShapeStyle(NX.selected.opacity(0.50))
+        if isCursor && isSelected && isActive {
+            // 커서 + 선택: 밝은 블루로 두 상태를 동시에 표현
+            return AnyShapeStyle(Color(hex: "#3468B0"))
         } else if isCursor && isActive {
             return AnyShapeStyle(NX.cursor)
         } else if isCursor {
             return AnyShapeStyle(NX.cursor.opacity(0.40))
+        } else if isSelected && isActive {
+            return AnyShapeStyle(NX.selected)
+        } else if isSelected {
+            return AnyShapeStyle(NX.selected.opacity(0.50))
         }
         return AnyShapeStyle(rowIndex % 2 == 0 ? NX.rowEven : NX.rowOdd)
     }
 }
 
-// MARK: - Drive List Footer
+// MARK: - File Grid Cell (다열 모드용 컴팩트 셀)
 
-struct DriveListFooter: View {
-    var volumes: [VolumeInfo]
-    var cursorIndex: Int?
-    var onTap: (VolumeInfo) -> Void
-    var onVolumesLoaded: ([VolumeInfo]) -> Void
+struct FileGridCellView: View {
+    var item: FileItem
+    var isSelected: Bool
+    var isCursor: Bool
+    var isActive: Bool
 
     var body: some View {
-        VStack(spacing: 0) {
-            ForEach(Array(volumes.enumerated()), id: \.element.id) { idx, vol in
-                DriveRowView(vol: vol, isCursor: idx == cursorIndex) {
-                    onTap(vol)
-                }
-                .id("drive_\(idx)")
-            }
+        HStack(spacing: 3) {
+            FinderIconView(url: item.url, isDirectory: item.isDirectory)
+                .frame(width: 14, height: 14)
+            Text(item.name)
+                .font(.system(size: 11))
+                .foregroundStyle(nameTint)
+                .lineLimit(1)
+                .truncationMode(.middle)
         }
-        .task { await load() }
-        .onReceive(NSWorkspace.shared.notificationCenter
-            .publisher(for: NSWorkspace.didMountNotification)) { _ in
-            Task { await load() }
-        }
-        .onReceive(NSWorkspace.shared.notificationCenter
-            .publisher(for: NSWorkspace.didUnmountNotification)) { _ in
-            Task { await load() }
-        }
+        .padding(.horizontal, 4)
+        .frame(height: 20)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(cellBg)
+        .opacity(item.isHidden ? 0.5 : 1.0)
     }
 
-    private func load() async {
-        let keys: [URLResourceKey] = [.volumeNameKey, .volumeTotalCapacityKey,
-                                       .volumeAvailableCapacityKey]
-        let urls = FileManager.default.mountedVolumeURLs(
-            includingResourceValuesForKeys: keys, options: [.skipHiddenVolumes]) ?? []
-        let loaded = urls.compactMap { url -> VolumeInfo? in
-            let res = try? url.resourceValues(forKeys: Set(keys))
-            let name = res?.volumeName ?? url.lastPathComponent
-            let total = Int64(res?.volumeTotalCapacity ?? 0)
-            let free  = Int64(res?.volumeAvailableCapacity ?? 0)
-            return VolumeInfo(url: url, name: name, totalBytes: total, freeBytes: free)
+    private var nameTint: Color {
+        if isSelected { return NX.selectedText }
+        if isCursor && isActive { return NX.cursorText }
+        return item.isDirectory ? NX.folderText : NX.fileText
+    }
+
+    private var cellBg: some ShapeStyle {
+        if isSelected && isActive  { return AnyShapeStyle(NX.selected) }
+        if isSelected              { return AnyShapeStyle(NX.selected.opacity(0.5)) }
+        if isCursor && isActive    { return AnyShapeStyle(NX.cursor) }
+        if isCursor                { return AnyShapeStyle(NX.cursor.opacity(0.4)) }
+        return AnyShapeStyle(Color.clear)
+    }
+}
+
+// MARK: - Drive Grid Cell (다열 모드 전용)
+
+struct DriveGridCellView: View {
+    var vol: VolumeInfo
+    var isCursor: Bool
+    var onTap: () -> Void
+    @State private var icon: NSImage?
+    @State private var hovered = false
+
+    var body: some View {
+        HStack(spacing: 3) {
+            Group {
+                if let icon { Image(nsImage: icon).resizable().scaledToFit() }
+                else { Image(systemName: "internaldrive").font(.system(size: 11)) }
+            }
+            .frame(width: 14, height: 14)
+            Text(vol.name)
+                .font(.system(size: 11))
+                .foregroundStyle(isCursor ? NX.cursorText : Color(hex: "#4A9EFF"))
+                .lineLimit(1)
+                .truncationMode(.tail)
         }
-        onVolumesLoaded(loaded)
+        .padding(.horizontal, 4)
+        .frame(height: 20)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(isCursor ? NX.cursor : hovered ? NX.cursor.opacity(0.4) : Color.clear)
+        .onHover { hovered = $0 }
+        .onTapGesture { onTap() }
+        .onAppear { icon = NSWorkspace.shared.icon(forFile: vol.url.path) }
     }
 }
 

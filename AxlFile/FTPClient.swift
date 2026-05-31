@@ -191,6 +191,11 @@ final class SFTPClient: @unchecked Sendable {
         guard r.exitCode == 0 else { throw SFTPError.transferFailed(r.stderr) }
     }
 
+    nonisolated func mkdir(remotePath: String) {
+        let escaped = remotePath.replacingOccurrences(of: "'", with: "'\\''")
+        runRemote("mkdir -p '\(escaped)'")
+    }
+
     // MARK: - Internal Helpers
 
     @discardableResult

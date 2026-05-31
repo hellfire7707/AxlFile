@@ -20,14 +20,14 @@ enum NX {
     static let fkeyBtnBorder = Color(hex: "#4A4A4A") // F키 버튼 테두리
 
     // ── Selections ───────────────────────────────────
-    static let selected     = Color(hex: "#8B008B")  // 선택 (마젠타)
+    static let selected     = Color(hex: "#505050")  // 선택 (회색)
     static let selectedText = Color(hex: "#FFFFFF")  // 선택된 행 텍스트
     static let cursor       = Color(hex: "#1E3D6B")  // 커서 (다크 블루)
     static let cursorText   = Color(hex: "#E8E8E8")  // 커서 행 텍스트
     static let activeBorder = Color(hex: "#0066CC")  // 활성 패널 상단선
 
     // ── Text ─────────────────────────────────────────
-    static let folderText   = Color(hex: "#D4AA00")  // 폴더 이름 (황금)
+    static let folderText   = Color(hex: "#C8C8C8")  // 폴더 이름
     static let fileText     = Color(hex: "#C8C8C8")  // 파일 이름
     static let extText      = Color(hex: "#707070")  // 확장자
     static let sizeText     = Color(hex: "#909090")  // 크기
