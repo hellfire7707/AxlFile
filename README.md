@@ -2,6 +2,8 @@
 
 macOS용 듀얼패널 파일 매니저. Nexus File 스타일의 키보드 중심 인터페이스를 제공합니다.
 
+![AxlFile Screenshot](assets/screenshot.png)
+
 ## 주요 기능
 
 - **듀얼패널** — 좌우 패널을 드래그로 크기 조절, Tab 키로 패널 전환
