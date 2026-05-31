@@ -22,7 +22,7 @@ struct AxlFileApp: App {
                 Button("파일 이동 (반대 패널)") { appState.moveSelectionToOpposite() }
                 Button("삭제") { appState.deleteSelection() }
                 Divider()
-                Button("FTP 연결...") { appState.showFTP = true }
+                Button("SFTP 연결...") { appState.showFTP = true }
             }
             CommandMenu("보기") {
                 Button("숨김 파일 표시/숨기기") {

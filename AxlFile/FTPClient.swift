@@ -1,351 +1,296 @@
 import Foundation
 
-// MARK: - FTP Errors
+// MARK: - SFTP Errors
 
-enum FTPError: LocalizedError {
-    case connectionFailed
-    case authFailed(String)
+enum SFTPError: LocalizedError {
+    case connectionFailed(String)
+    case authFailed
     case commandFailed(String)
-    case dataConnectionFailed
     case transferFailed(String)
     case notConnected
 
     var errorDescription: String? {
         switch self {
-        case .connectionFailed:     return "서버에 연결할 수 없습니다"
-        case .authFailed(let m):    return "인증 실패: \(m)"
-        case .commandFailed(let m): return "명령 오류: \(m)"
-        case .dataConnectionFailed: return "데이터 연결 실패"
-        case .transferFailed(let m):return "전송 오류: \(m)"
-        case .notConnected:         return "연결되어 있지 않습니다"
+        case .connectionFailed(let m): return "연결 실패: \(m)"
+        case .authFailed:              return "인증 실패 — 비밀번호 또는 SSH 키를 확인하세요"
+        case .commandFailed(let m):    return "명령 오류: \(m)"
+        case .transferFailed(let m):   return "전송 오류: \(m)"
+        case .notConnected:            return "연결되어 있지 않습니다"
         }
     }
 }
 
-// MARK: - FTP File Entry
+// MARK: - SFTP Entry
 
-struct FTPEntry: Identifiable {
-    let id = UUID()
-    let name: String
-    let isDirectory: Bool
-    let size: Int64
-    let modified: String
-    var path: String = ""
+struct SFTPEntry: Identifiable {
+    let id           = UUID()
+    let name:         String
+    let isDirectory:  Bool
+    let isSymlink:    Bool
+    let size:         Int64
+    let permissions:  String
+    let modifiedDate: Date?
+    var path:         String = ""
 }
 
-// MARK: - FTP Client
+// MARK: - Process Result
 
-// nonisolated으로 선언해 MainActor 격리에서 제외 — FTP는 백그라운드 스레드에서 동작함
-nonisolated(unsafe) class FTPClient: @unchecked Sendable {
-    private var inputStream: InputStream?
-    private var outputStream: OutputStream?
-    private(set) var isConnected = false
-    private(set) var currentPath = "/"
-    var host = ""
-    var port = 21
+struct ProcessResult {
+    let exitCode: Int
+    let stdout:   String
+    let stderr:   String
+}
 
-    // MARK: Connect
+// MARK: - SFTP Client (ssh ControlMaster 기반)
 
-    func connect(host: String, port: Int = 21, username: String, password: String) throws {
-        self.host = host
-        self.port = port
+final class SFTPClient: @unchecked Sendable {
 
-        var inp: InputStream?
-        var out: OutputStream?
-        Stream.getStreamsToHost(withName: host, port: port, inputStream: &inp, outputStream: &out)
-        guard let i = inp, let o = out else { throw FTPError.connectionFailed }
-        inputStream = i
-        outputStream = o
-        i.open(); o.open()
+    let host:     String
+    let port:     Int
+    let username: String
 
-        // Give streams time to connect
-        Thread.sleep(forTimeInterval: 0.5)
-        guard i.streamStatus == .open || i.streamStatus == .reading else {
-            throw FTPError.connectionFailed
+    private let password:    String
+    private let useKeyAuth:  Bool
+    private let controlPath: String
+    nonisolated(unsafe) private var askpassPath: String?
+
+    nonisolated(unsafe) private(set) var isConnected = false
+    nonisolated(unsafe) private(set) var currentPath = "/"
+
+    init(host: String, port: Int = 22, username: String,
+         password: String = "", useKeyAuth: Bool = false) {
+        self.host       = host
+        self.port       = port
+        self.username   = username
+        self.password   = password
+        self.useKeyAuth = useKeyAuth
+        let safe = host
+            .replacingOccurrences(of: ".", with: "_")
+            .replacingOccurrences(of: ":", with: "_")
+        controlPath = "/tmp/axlfile_ctrl_\(safe)_\(port)_\(username)"
+    }
+
+    // MARK: - Connect / Disconnect
+
+    nonisolated func connect() throws {
+        try? FileManager.default.removeItem(atPath: controlPath)
+
+        var env: [String: String] = [:]
+        if !password.isEmpty && !useKeyAuth {
+            let s = makeAskpassScript()
+            askpassPath = s
+            env["SSH_ASKPASS"]         = s
+            env["SSH_ASKPASS_REQUIRE"] = "force"
+            env["DISPLAY"]             = ":0"
         }
 
-        let welcome = try readLine()
-        guard welcome.hasPrefix("220") else { throw FTPError.commandFailed(welcome) }
-
-        // Login
-        try sendCommand("USER \(username)")
-        let userResp = try readLine()
-        if userResp.hasPrefix("331") {
-            try sendCommand("PASS \(password)")
-            let passResp = try readLine()
-            guard passResp.hasPrefix("230") else { throw FTPError.authFailed(passResp) }
-        } else if !userResp.hasPrefix("230") {
-            throw FTPError.authFailed(userResp)
+        let args: [String] = [
+            "-M", "-S", controlPath, "-f", "-N",
+            "-o", "StrictHostKeyChecking=accept-new",
+            "-o", "PasswordAuthentication=\(useKeyAuth ? "no" : "yes")",
+            "-o", "BatchMode=\(useKeyAuth ? "yes" : "no")",
+            "-o", "ConnectTimeout=15",
+            "-p", "\(port)",
+            "\(username)@\(host)"
+        ]
+        let r = execProcess("/usr/bin/ssh", args: args, env: env, timeout: 20)
+        if r.exitCode != 0 {
+            cleanup()
+            let msg = r.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            if msg.lowercased().contains("permission denied") ||
+               msg.lowercased().contains("authentication failed") {
+                throw SFTPError.authFailed
+            }
+            throw SFTPError.connectionFailed(msg.isEmpty ? "exit \(r.exitCode)" : msg)
         }
 
-        // Binary mode
-        try sendCommand("TYPE I")
-        _ = try readLine()
+        // ControlMaster 활성 확인
+        let chk = sshExec(["-S", controlPath, "-O", "check", "\(username)@\(host)"], timeout: 5)
+        guard chk.exitCode == 0 else {
+            cleanup()
+            throw SFTPError.connectionFailed("ControlMaster 확인 실패")
+        }
 
         isConnected = true
-        currentPath = try pwd()
+        let pwd = runRemote("pwd")
+        if pwd.exitCode == 0 {
+            currentPath = pwd.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
     }
 
-    func disconnect() {
-        try? sendCommand("QUIT")
-        inputStream?.close()
-        outputStream?.close()
-        inputStream = nil
-        outputStream = nil
+    nonisolated func disconnect() {
+        _ = sshExec(["-S", controlPath, "-O", "exit", "\(username)@\(host)"], timeout: 5)
+        cleanup()
         isConnected = false
     }
 
-    // MARK: Navigation
+    // MARK: - Directory List
 
-    func pwd() throws -> String {
-        try sendCommand("PWD")
-        let resp = try readLine()
-        // 257 "/path" is the current directory
-        if resp.hasPrefix("257") {
-            let parts = resp.components(separatedBy: "\"")
-            return parts.count >= 2 ? parts[1] : "/"
-        }
-        return "/"
+    nonisolated func list(path: String) throws -> [SFTPEntry] {
+        guard isConnected else { throw SFTPError.notConnected }
+        let r = runRemote("LC_ALL=C ls -la \(q(path)) 2>&1")
+        return parseLs(r.stdout, base: path)
     }
 
-    func cd(path: String) throws {
-        try sendCommand("CWD \(path)")
-        let resp = try readLine()
-        guard resp.hasPrefix("250") else { throw FTPError.commandFailed(resp) }
-        currentPath = try pwd()
+    // MARK: - File Operations (원격)
+
+    nonisolated func mkdir(path: String) throws {
+        guard isConnected else { throw SFTPError.notConnected }
+        let r = runRemote("mkdir -p \(q(path))")
+        guard r.exitCode == 0 else { throw SFTPError.commandFailed(r.stderr) }
     }
 
-    // MARK: List
-
-    func list(path: String? = nil) throws -> [FTPEntry] {
-        let (dataIn, dataOut) = try openPassive()
-        defer { dataIn.close(); dataOut.close() }
-
-        let cmd = path.map { "LIST \($0)" } ?? "LIST"
-        try sendCommand(cmd)
-        let resp = try readLine()
-        guard resp.hasPrefix("125") || resp.hasPrefix("150") else {
-            throw FTPError.commandFailed(resp)
-        }
-
-        // Read listing from data connection
-        var listing = ""
-        var buf = [UInt8](repeating: 0, count: 4096)
-        Thread.sleep(forTimeInterval: 0.2)
-        while dataIn.hasBytesAvailable {
-            let n = dataIn.read(&buf, maxLength: buf.count)
-            if n <= 0 { break }
-            listing += String(bytes: buf.prefix(n), encoding: .utf8) ?? ""
-        }
-
-        _ = try? readLine() // 226 Transfer complete
-
-        return parseListing(listing)
+    nonisolated func deleteItem(path: String, isDirectory: Bool) throws {
+        guard isConnected else { throw SFTPError.notConnected }
+        let cmd = isDirectory ? "rm -rf \(q(path))" : "rm -f \(q(path))"
+        let r = runRemote(cmd)
+        guard r.exitCode == 0 else { throw SFTPError.commandFailed(r.stderr) }
     }
 
-    // MARK: Download
-
-    func download(remotePath: String, localURL: URL,
-                  progress: @escaping (Double) -> Void) throws {
-        let size = try getSize(path: remotePath)
-        let (dataIn, dataOut) = try openPassive()
-        defer { dataIn.close(); dataOut.close() }
-
-        try sendCommand("RETR \(remotePath)")
-        let resp = try readLine()
-        guard resp.hasPrefix("125") || resp.hasPrefix("150") else {
-            throw FTPError.commandFailed(resp)
-        }
-
-        let fm = FileManager.default
-        fm.createFile(atPath: localURL.path, contents: nil)
-        guard let handle = FileHandle(forWritingAtPath: localURL.path) else {
-            throw FTPError.transferFailed("로컬 파일 생성 실패")
-        }
-        defer { handle.closeFile() }
-
-        var received: Int64 = 0
-        var buf = [UInt8](repeating: 0, count: 65536)
-        while dataIn.hasBytesAvailable || dataIn.streamStatus == .open {
-            let n = dataIn.read(&buf, maxLength: buf.count)
-            if n <= 0 { break }
-            handle.write(Data(buf.prefix(n)))
-            received += Int64(n)
-            if size > 0 { progress(Double(received) / Double(size)) }
-        }
-
-        _ = try? readLine() // 226
+    nonisolated func rename(from: String, to: String) throws {
+        guard isConnected else { throw SFTPError.notConnected }
+        let r = runRemote("mv \(q(from)) \(q(to))")
+        guard r.exitCode == 0 else { throw SFTPError.commandFailed(r.stderr) }
     }
 
-    // MARK: Upload
-
-    func upload(localURL: URL, remotePath: String,
-                progress: @escaping (Double) -> Void) throws {
-        guard let data = try? Data(contentsOf: localURL) else {
-            throw FTPError.transferFailed("로컬 파일 읽기 실패")
-        }
-        let total = data.count
-
-        let (dataIn, dataOut) = try openPassive()
-        defer { dataIn.close(); dataOut.close() }
-
-        try sendCommand("STOR \(remotePath)")
-        let resp = try readLine()
-        guard resp.hasPrefix("125") || resp.hasPrefix("150") else {
-            throw FTPError.commandFailed(resp)
-        }
-
-        let chunkSize = 65536
-        var sent = 0
-        while sent < total {
-            let end = min(sent + chunkSize, total)
-            let chunk = Array(data[sent..<end])
-            var written = 0
-            while written < chunk.count {
-                let slice = Array(chunk[written...])
-                let n = dataOut.write(slice, maxLength: slice.count)
-                if n <= 0 { throw FTPError.transferFailed("쓰기 실패") }
-                written += n
-            }
-            sent += chunk.count
-            progress(Double(sent) / Double(total))
-        }
-        dataOut.close()
-        _ = try? readLine() // 226
+    nonisolated func copyRemote(from: String, to: String) throws {
+        guard isConnected else { throw SFTPError.notConnected }
+        let r = runRemote("cp -r \(q(from)) \(q(to))")
+        guard r.exitCode == 0 else { throw SFTPError.commandFailed(r.stderr) }
     }
 
-    // MARK: File Operations
-
-    func mkdir(path: String) throws {
-        try sendCommand("MKD \(path)")
-        let resp = try readLine()
-        guard resp.hasPrefix("257") else { throw FTPError.commandFailed(resp) }
+    nonisolated func createFile(path: String) throws {
+        guard isConnected else { throw SFTPError.notConnected }
+        let r = runRemote("touch \(q(path))")
+        guard r.exitCode == 0 else { throw SFTPError.commandFailed(r.stderr) }
     }
 
-    func delete(path: String, isDirectory: Bool) throws {
-        let cmd = isDirectory ? "RMD \(path)" : "DELE \(path)"
-        try sendCommand(cmd)
-        let resp = try readLine()
-        guard resp.hasPrefix("250") else { throw FTPError.commandFailed(resp) }
+    // MARK: - Upload / Download (scp)
+
+    nonisolated func upload(localURL: URL, remotePath: String) throws {
+        guard isConnected else { throw SFTPError.notConnected }
+        let r = execProcess("/usr/bin/scp", args: [
+            "-r", "-P", "\(port)",
+            "-o", "ControlPath=\(controlPath)",
+            "-o", "StrictHostKeyChecking=accept-new",
+            localURL.path,
+            "\(username)@\(host):\(remotePath)"
+        ], env: [:], timeout: 300)
+        guard r.exitCode == 0 else { throw SFTPError.transferFailed(r.stderr) }
     }
 
-    func rename(from: String, to: String) throws {
-        try sendCommand("RNFR \(from)")
-        let r1 = try readLine()
-        guard r1.hasPrefix("350") else { throw FTPError.commandFailed(r1) }
-        try sendCommand("RNTO \(to)")
-        let r2 = try readLine()
-        guard r2.hasPrefix("250") else { throw FTPError.commandFailed(r2) }
-    }
-
-    func getSize(path: String) throws -> Int64 {
-        try sendCommand("SIZE \(path)")
-        let resp = try readLine()
-        if resp.hasPrefix("213") {
-            let parts = resp.trimmingCharacters(in: .whitespaces).components(separatedBy: " ")
-            return Int64(parts.last ?? "0") ?? 0
-        }
-        return 0
+    nonisolated func download(remotePath: String, localURL: URL) throws {
+        guard isConnected else { throw SFTPError.notConnected }
+        let r = execProcess("/usr/bin/scp", args: [
+            "-r", "-P", "\(port)",
+            "-o", "ControlPath=\(controlPath)",
+            "-o", "StrictHostKeyChecking=accept-new",
+            "\(username)@\(host):\(remotePath)",
+            localURL.path
+        ], env: [:], timeout: 300)
+        guard r.exitCode == 0 else { throw SFTPError.transferFailed(r.stderr) }
     }
 
     // MARK: - Internal Helpers
 
-    private func sendCommand(_ cmd: String) throws {
-        guard let out = outputStream else { throw FTPError.notConnected }
-        let line = cmd + "\r\n"
-        var bytes = Array(line.utf8)
-        let n = out.write(&bytes, maxLength: bytes.count)
-        if n <= 0 { throw FTPError.connectionFailed }
+    @discardableResult
+    nonisolated func runRemote(_ command: String) -> ProcessResult {
+        sshExec(["-S", controlPath, "\(username)@\(host)", command], timeout: 30)
     }
 
-    // Reads a full response (handles multi-line responses like "220-...\r\n220 \r\n")
-    private func readLine() throws -> String {
-        guard let inp = inputStream else { throw FTPError.notConnected }
-        var result = ""
-        var attempts = 0
-        while attempts < 200 {
-            if inp.hasBytesAvailable {
-                var line = ""
-                var byte = [UInt8](repeating: 0, count: 1)
-                while inp.hasBytesAvailable {
-                    let n = inp.read(&byte, maxLength: 1)
-                    if n <= 0 { break }
-                    if byte[0] == UInt8(ascii: "\n") {
-                        result += line
-                        // Multi-line: "123-..." continues until "123 "
-                        if result.count >= 4 {
-                            let sep  = result.count > 3 ? String(result[result.index(result.startIndex, offsetBy: 3)]) : "-"
-                            if sep == " " { return result }
-                            // Keep reading
-                            result += "\n"
-                        } else {
-                            return result
-                        }
-                        line = ""
-                        continue
-                    }
-                    if byte[0] != UInt8(ascii: "\r") {
-                        line.append(Character(UnicodeScalar(byte[0])))
-                    }
-                }
-                result += line
-            }
-            Thread.sleep(forTimeInterval: 0.05)
-            attempts += 1
+    @discardableResult
+    nonisolated private func sshExec(_ args: [String], timeout: TimeInterval) -> ProcessResult {
+        execProcess("/usr/bin/ssh", args: args, env: [:], timeout: timeout)
+    }
+
+    nonisolated private func execProcess(_ exe: String, args: [String],
+                                         env: [String: String], timeout: TimeInterval) -> ProcessResult {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: exe)
+        p.arguments = args
+        var environment = ProcessInfo.processInfo.environment
+        for (k, v) in env { environment[k] = v }
+        p.environment = environment
+        let outPipe = Pipe(); let errPipe = Pipe()
+        p.standardOutput = outPipe; p.standardError = errPipe
+        guard (try? p.run()) != nil else {
+            return ProcessResult(exitCode: -1, stdout: "", stderr: "프로세스 실행 실패")
         }
-        return result
+        let deadline = Date().addingTimeInterval(timeout)
+        while p.isRunning && Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
+        if p.isRunning { p.terminate(); return ProcessResult(exitCode: -1, stdout: "", stderr: "타임아웃") }
+        let out = String(data: outPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let err = String(data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        return ProcessResult(exitCode: Int(p.terminationStatus), stdout: out, stderr: err)
     }
 
-    // PASV mode: returns (input, output) streams for data connection
-    private func openPassive() throws -> (InputStream, OutputStream) {
-        try sendCommand("PASV")
-        let resp = try readLine()
-        guard resp.hasPrefix("227") else { throw FTPError.commandFailed(resp) }
+    nonisolated private func makeAskpassScript() -> String {
+        let path = "/tmp/axlfile_askpass_\(UUID().uuidString.prefix(8)).sh"
+        let escaped = password.replacingOccurrences(of: "'", with: "'\\''")
+        let script = "#!/bin/sh\necho '\(escaped)'\n"
+        try? script.write(toFile: path, atomically: true, encoding: .utf8)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: path)
+        return path
+    }
 
-        // Parse (h1,h2,h3,h4,p1,p2)
-        guard let start = resp.firstIndex(of: "("),
-              let end   = resp.firstIndex(of: ")") else {
-            throw FTPError.dataConnectionFailed
+    nonisolated private func cleanup() {
+        if let p = askpassPath {
+            try? FileManager.default.removeItem(atPath: p)
+            askpassPath = nil
         }
-        let inner = String(resp[resp.index(after: start)..<end])
-        let nums  = inner.components(separatedBy: ",").compactMap { Int($0.trimmingCharacters(in: .whitespaces)) }
-        guard nums.count == 6 else { throw FTPError.dataConnectionFailed }
-
-        let dataHost = "\(nums[0]).\(nums[1]).\(nums[2]).\(nums[3])"
-        let dataPort = nums[4] * 256 + nums[5]
-
-        var dataIn: InputStream?
-        var dataOut: OutputStream?
-        Stream.getStreamsToHost(withName: dataHost, port: dataPort,
-                                inputStream: &dataIn, outputStream: &dataOut)
-        guard let di = dataIn, let dout = dataOut else { throw FTPError.dataConnectionFailed }
-        di.open(); dout.open()
-        Thread.sleep(forTimeInterval: 0.1)
-        return (di, dout)
+        try? FileManager.default.removeItem(atPath: controlPath)
     }
 
-    // MARK: - Directory Listing Parser
+    nonisolated private func q(_ s: String) -> String {
+        "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
 
-    // Parses Unix-style "ls -l" output from FTP LIST command
-    private func parseListing(_ listing: String) -> [FTPEntry] {
-        listing.components(separatedBy: "\n").compactMap { line -> FTPEntry? in
+    // MARK: - ls -la 파서
+
+    nonisolated private func parseLs(_ output: String, base: String) -> [SFTPEntry] {
+        let lines = output.components(separatedBy: "\n")
+        var entries: [SFTPEntry] = []
+        let curYear = Calendar.current.component(.year, from: Date())
+
+        for line in lines {
             let l = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard l.count > 10 else { return nil }
-
-            // Unix format: "drwxr-xr-x  2 user group    4096 Jan  1 12:00 dirname"
-            let isDir = l.hasPrefix("d")
+            guard l.count > 10, !l.hasPrefix("total"), !l.hasPrefix("ls:") else { continue }
             let parts = l.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
-            guard parts.count >= 9 else { return nil }
+            guard parts.count >= 9 else { continue }
 
-            let name = parts[8...].joined(separator: " ")
-            guard name != "." && name != ".." else { return nil }
-            let size = Int64(parts[4]) ?? 0
-            let month = parts[5]
-            let day   = parts[6]
-            let time  = parts[7]
-            let modified = "\(month) \(day) \(time)"
+            let perms = parts[0]
+            let isDir  = perms.hasPrefix("d")
+            let isLink = perms.hasPrefix("l")
+            let size   = Int64(parts[4]) ?? 0
+            let month = parts[5]; let day = parts[6]; let timeOrYear = parts[7]
 
-            return FTPEntry(name: name, isDirectory: isDir, size: size, modified: modified)
+            var rawName = parts[8...].joined(separator: " ")
+            if isLink, let r = rawName.range(of: " -> ") { rawName = String(rawName[..<r.lowerBound]) }
+            guard rawName != "." && rawName != ".." && !rawName.isEmpty else { continue }
+
+            var date: Date?
+            let df = DateFormatter()
+            df.locale = Locale(identifier: "en_US_POSIX")
+            if timeOrYear.contains(":") {
+                df.dateFormat = "MMM d HH:mm yyyy"
+                date = df.date(from: "\(month) \(day) \(timeOrYear) \(curYear)")
+            } else {
+                df.dateFormat = "MMM d yyyy"
+                date = df.date(from: "\(month) \(day) \(timeOrYear)")
+            }
+
+            let normalBase = (base != "/" && base.hasSuffix("/")) ? String(base.dropLast()) : base
+            let entryPath  = normalBase == "/" ? "/\(rawName)" : "\(normalBase)/\(rawName)"
+
+            entries.append(SFTPEntry(
+                name: rawName, isDirectory: isDir, isSymlink: isLink,
+                size: size, permissions: perms, modifiedDate: date, path: entryPath
+            ))
+        }
+
+        return entries.sorted { a, b in
+            if a.isDirectory != b.isDirectory { return a.isDirectory }
+            return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
         }
     }
 }

@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 // MARK: - FileListView
 
@@ -118,9 +119,7 @@ struct FileListView: View {
             appState.showNewFile = true
             return .handled
         case _ where press.modifiers.contains(.command) && press.characters == "t":
-            currentPane.addTab(url: tab.url)
-            Task { if let t = currentPane.activeTab {
-                await appState.loadTab(t, showHidden: appState.showHidden) }}
+            appState.addNewTab(in: currentPane)
             return .handled
         case _ where press.modifiers.contains(.command) && press.characters == "w":
             if let idx = currentPane.tabs.firstIndex(where: { $0.id == tab.id }) {
@@ -140,24 +139,19 @@ struct FileListView: View {
             }
             return .handled
 
-        // F3 보기
-        case "\u{F706}":
-            if let item = tab.cursorFile, !item.isDirectory {
-                appState.viewerURL = item.url
-                appState.showViewer = true
+        // F3 반대 패널로 복사
+        case "\u{F706}": appState.copySelectionToOpposite(); return .handled
+
+        // F4 반대 패널로 이동
+        case "\u{F707}": appState.moveSelectionToOpposite(); return .handled
+
+        // F5 새로고침
+        case "\u{F708}":
+            Task {
+                await appState.reload(pane: appState.leftPane)
+                await appState.reload(pane: appState.rightPane)
             }
             return .handled
-
-        // F4 편집 (기본 앱으로)
-        case "\u{F707}":
-            if let item = tab.cursorFile { NSWorkspace.shared.open(item.url) }
-            return .handled
-
-        // F5 반대 패널로 복사
-        case "\u{F708}": appState.copySelectionToOpposite(); return .handled
-
-        // F6 반대 패널로 이동
-        case "\u{F709}": appState.moveSelectionToOpposite(); return .handled
 
         // F7 새 폴더
         case "\u{F70A}":
@@ -208,12 +202,14 @@ struct FileListView: View {
     private func openItem(_ item: FileItem) {
         if item.isDirectory {
             appState.navigate(tab: tab, to: item.url)
-        } else {
+        } else if !tab.isSFTP {
             NSWorkspace.shared.open(item.url)
         }
+        // SFTP 파일 열기: 향후 다운로드 후 열기 지원 예정
     }
 
     private func goUp() {
+        guard tab.url.path != "/" else { return }
         let parent = tab.url.deletingLastPathComponent()
         guard parent != tab.url else { return }
         appState.navigate(tab: tab, to: parent)
@@ -243,7 +239,7 @@ struct FileListView: View {
             Label("열기", systemImage: "return")
         }
 
-        if isSingle && !first.isDirectory {
+        if isSingle && !first.isDirectory && !tab.isSFTP {
             Button {
                 NSWorkspace.shared.open(first.url)
             } label: {
@@ -253,53 +249,55 @@ struct FileListView: View {
 
         Divider()
 
-        // 보기 / 편집
-        if isSingle && !first.isDirectory && first.isViewable {
-            Button {
-                appState.viewerURL = first.url
-                appState.showViewer = true
-            } label: {
-                Label("보기 (F3)", systemImage: "eye")
+        // 보기 / 편집 (로컬 전용)
+        if !tab.isSFTP {
+            if isSingle && !first.isDirectory && first.isViewable {
+                Button {
+                    appState.viewerURL = first.url
+                    appState.showViewer = true
+                } label: {
+                    Label("보기 (F3)", systemImage: "eye")
+                }
             }
-        }
 
-        if isSingle {
-            Button {
-                NSWorkspace.shared.open(first.url)
-            } label: {
-                Label("편집 (F4)", systemImage: "pencil")
+            if isSingle {
+                Button {
+                    NSWorkspace.shared.open(first.url)
+                } label: {
+                    Label("편집 (F4)", systemImage: "pencil")
+                }
             }
-        }
 
-        Button {
-            NSWorkspace.shared.activateFileViewerSelecting(items.map { $0.url })
-        } label: {
-            Label("Finder에서 보기", systemImage: "folder")
-        }
+            Button {
+                NSWorkspace.shared.activateFileViewerSelecting(items.map { $0.url })
+            } label: {
+                Label("Finder에서 보기", systemImage: "folder")
+            }
 
-        Divider()
+            Divider()
 
-        // 클립보드
-        Button {
-            appState.clipboard    = items.map { $0.url }
-            appState.clipboardOp  = .copy
-        } label: {
-            Label("복사", systemImage: "doc.on.doc")
-        }
+            // 클립보드 (로컬 전용)
+            Button {
+                appState.clipboard    = items.map { $0.url }
+                appState.clipboardOp  = .copy
+            } label: {
+                Label("복사", systemImage: "doc.on.doc")
+            }
 
-        Button {
-            appState.clipboard    = items.map { $0.url }
-            appState.clipboardOp  = .move
-        } label: {
-            Label("잘라내기", systemImage: "scissors")
-        }
+            Button {
+                appState.clipboard    = items.map { $0.url }
+                appState.clipboardOp  = .move
+            } label: {
+                Label("잘라내기", systemImage: "scissors")
+            }
 
-        Button {
-            Task { await appState.performPaste() }
-        } label: {
-            Label("붙여넣기", systemImage: "doc.on.clipboard")
+            Button {
+                Task { await appState.performPaste() }
+            } label: {
+                Label("붙여넣기", systemImage: "doc.on.clipboard")
+            }
+            .disabled(appState.clipboard.isEmpty)
         }
-        .disabled(appState.clipboard.isEmpty)
 
         Divider()
 
@@ -358,7 +356,7 @@ struct FileListView: View {
             Label("전체 선택", systemImage: "checkmark.circle")
         }
 
-        if isSingle {
+        if isSingle && !tab.isSFTP {
             Divider()
 
             Button {
@@ -415,9 +413,10 @@ struct ColumnHeaderView: View {
 
 // MARK: - Finder Icon View
 
-// NSWorkspace에서 실제 Finder 아이콘을 가져와 표시
+// NSWorkspace에서 실제 Finder 아이콘을 가져와 표시 (로컬·SFTP 공용)
 struct FinderIconView: View {
     let url: URL
+    var isDirectory: Bool = false
     @State private var icon: NSImage?
 
     var body: some View {
@@ -433,33 +432,50 @@ struct FinderIconView: View {
         .frame(width: 16, height: 16)
         .onAppear {
             guard icon == nil else { return }
-            // NSWorkspace.icon(forFile:)는 Launch Services 캐시를 사용하므로 빠름
-            icon = FinderIconCache.shared.icon(for: url)
+            icon = FinderIconCache.shared.icon(for: url, isDirectory: isDirectory)
         }
     }
 }
 
-// 확장자 기준으로 캐싱 (같은 타입 파일은 같은 아이콘)
+// 확장자/UTType 기준으로 캐싱 (같은 타입 파일은 같은 아이콘)
 @MainActor
 final class FinderIconCache {
     static let shared = FinderIconCache()
     private var cache: [String: NSImage] = [:]
 
-    func icon(for url: URL) -> NSImage {
-        // 폴더/패키지는 경로 기준, 파일은 확장자 기준으로 캐싱
+    func icon(for url: URL, isDirectory: Bool = false) -> NSImage {
+        // SFTP 항목: 로컬 파일 없음 → UTType 기반 Finder 아이콘 사용
+        if url.scheme == "sftp" {
+            return sftpIcon(ext: url.pathExtension.lowercased(), isDirectory: isDirectory)
+        }
+
+        // 로컬 항목: 폴더/패키지는 경로 기준(커스텀 아이콘 지원), 파일은 확장자 기준
         var key: String
         var isDir: ObjCBool = false
         FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir)
         if isDir.boolValue {
-            // 커스텀 아이콘이 있을 수 있으니 경로 기준
             key = url.path
         } else {
             let ext = url.pathExtension.lowercased()
             key = ext.isEmpty ? url.lastPathComponent : ".\(ext)"
         }
-
         if let cached = cache[key] { return cached }
         let img = NSWorkspace.shared.icon(forFile: url.path)
+        cache[key] = img
+        return img
+    }
+
+    private func sftpIcon(ext: String, isDirectory: Bool) -> NSImage {
+        let key = isDirectory ? "__dir__" : (ext.isEmpty ? "__file__" : "__\(ext)__")
+        if let cached = cache[key] { return cached }
+        let img: NSImage
+        if isDirectory {
+            img = NSWorkspace.shared.icon(for: .folder)
+        } else if !ext.isEmpty, let utType = UTType(filenameExtension: ext) {
+            img = NSWorkspace.shared.icon(for: utType)
+        } else {
+            img = NSWorkspace.shared.icon(for: .data)
+        }
         cache[key] = img
         return img
     }
@@ -476,8 +492,8 @@ struct FileRowView: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            // Finder 아이콘
-            FinderIconView(url: item.url)
+            // Finder 아이콘 (로컬·SFTP 공용 — UTType 기반)
+            FinderIconView(url: item.url, isDirectory: item.isDirectory)
                 .frame(width: 24, alignment: .center)
                 .opacity(isSelected ? 0.85 : 1.0)
 

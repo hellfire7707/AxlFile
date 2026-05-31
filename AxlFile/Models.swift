@@ -148,9 +148,15 @@ class TabInfo: Identifiable {
     var sortAscending = true
     var isLoading = false
 
+    // SFTP 탭: nil이면 로컬 파일시스템
+    var sftpClient: SFTPClient?
+
+    var isSFTP: Bool { sftpClient != nil }
+
     init(url: URL) { self.url = url }
 
     var title: String {
+        if let client = sftpClient { return client.host }
         let n = url.lastPathComponent
         return n.isEmpty ? "/" : n
     }
@@ -211,8 +217,9 @@ class PaneState {
         tabs.indices.contains(activeIndex) ? tabs[activeIndex] : nil
     }
 
-    func addTab(url: URL) {
+    func addTab(url: URL, sftpClient: SFTPClient? = nil) {
         let t = TabInfo(url: url)
+        t.sftpClient = sftpClient
         tabs.append(t)
         activeIndex = tabs.count - 1
     }

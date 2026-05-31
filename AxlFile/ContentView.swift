@@ -3,6 +3,14 @@ import SwiftUI
 struct ContentView: View {
     @Environment(AppState.self) private var appState
 
+    private var deleteDialogTitle: String {
+        let targets = appState.deleteTargets
+        if targets.count == 1 {
+            return "\"\(targets[0].name)\"을(를) 삭제하시겠습니까?"
+        }
+        return "\(targets.count)개 항목을 삭제하시겠습니까?"
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             ToolbarView()
@@ -25,7 +33,7 @@ struct ContentView: View {
             if let url = appState.viewerURL { ViewerView(url: url) }
         }
         .sheet(isPresented: Binding(get: { appState.showFTP }, set: { appState.showFTP = $0 })) {
-            FTPConnectView().environment(appState)
+            SFTPConnectView().environment(appState)
         }
         .sheet(isPresented: Binding(get: { appState.showProperties }, set: { appState.showProperties = $0 })) {
             if let url = appState.propertiesTarget {
@@ -34,6 +42,12 @@ struct ContentView: View {
         }
         .overlay {
             if appState.isWorking { WorkingOverlay().environment(appState) }
+        }
+        .sheet(isPresented: Binding(
+            get: { appState.showDeleteConfirm },
+            set: { appState.showDeleteConfirm = $0 }
+        )) {
+            DeleteConfirmDialog().environment(appState)
         }
         .task {
             if let lt = appState.leftPane.activeTab {
@@ -90,7 +104,7 @@ struct ToolbarView: View {
             }
 
             Divider().frame(height: 20).padding(.horizontal, 4)
-            tbBtn("network",              "FTP") { appState.showFTP = true }
+            tbBtn("network",              "SFTP") { appState.showFTP = true }
 
             Spacer()
 
@@ -198,7 +212,7 @@ struct FileInfoBar: View {
     }
 }
 
-// MARK: - Function Key Bar  ── F2 Rename | F3 Copy To | F4 Move To ...
+// MARK: - Function Key Bar  ── F2 Rename | F3 Copy To | F4 Move To | F5 Refresh | F7 New Folder | F8 Delete | F9 SFTP | F10 Quit
 
 struct FunctionKeyBar: View {
     @Environment(AppState.self) private var appState
@@ -207,7 +221,7 @@ struct FunctionKeyBar: View {
     var body: some View {
         GeometryReader { geo in
             HStack(spacing: 0) {
-                // F2 이름 변경 — 커서 파일 없으면 비활성
+                // F2 이름 변경
                 fKey("F2", "Rename", disabled: appState.activePane.activeTab?.cursorFile == nil) {
                     if let item = appState.activePane.activeTab?.cursorFile {
                         appState.renameText = item.name
@@ -215,28 +229,21 @@ struct FunctionKeyBar: View {
                     }
                 }
                 div()
-                // F3 보기 — 파일일 때만 활성
-                fKey("F3", "View", disabled: {
-                    guard let item = appState.activePane.activeTab?.cursorFile else { return true }
-                    return item.isDirectory || !item.isViewable
-                }()) {
-                    if let item = appState.activePane.activeTab?.cursorFile, !item.isDirectory {
-                        appState.viewerURL = item.url
-                        appState.showViewer = true
+                // F3 반대 패널로 복사
+                fKey("F3", "Copy To") { appState.copySelectionToOpposite() }
+                div()
+                // F4 반대 패널로 이동
+                fKey("F4", "Move To") { appState.moveSelectionToOpposite() }
+                div()
+                // F5 새로고침
+                fKey("F5", "Refresh") {
+                    Task {
+                        await appState.reload(pane: appState.leftPane)
+                        await appState.reload(pane: appState.rightPane)
                     }
                 }
                 div()
-                // F4 편집 — 파일일 때만 활성
-                fKey("F4", "Edit", disabled: appState.activePane.activeTab?.cursorFile?.isDirectory == true) {
-                    if let item = appState.activePane.activeTab?.cursorFile {
-                        NSWorkspace.shared.open(item.url)
-                    }
-                }
-                div()
-                fKey("F5", "Copy To")  { appState.copySelectionToOpposite() }
-                div()
-                fKey("F6", "Move To")  { appState.moveSelectionToOpposite() }
-                div()
+                // F7 새 폴더
                 fKey("F7", "New Folder") {
                     appState.newFolderName = ""
                     appState.showNewFolder = true
@@ -249,7 +256,7 @@ struct FunctionKeyBar: View {
                     appState.deleteSelection()
                 }
                 div()
-                fKey("F9", "FTP") { appState.showFTP = true }
+                fKey("F9", "SFTP") { appState.showFTP = true }
                 div()
                 fKey("F10", "Quit") { showQuitConfirm = true }
             }
@@ -305,20 +312,192 @@ extension NumberFormatter {
 
 // MARK: - Working Overlay
 
+// MARK: - Work Progress Panel  (Nexus File 스타일)
+
 struct WorkingOverlay: View {
     @Environment(AppState.self) private var appState
 
     var body: some View {
         ZStack {
-            Color.black.opacity(0.3).ignoresSafeArea()
-            VStack(spacing: 14) {
-                ProgressView(value: appState.workProgress).frame(width: 260)
-                Text(appState.workMessage).font(.callout)
-                Button("취소") {}.keyboardShortcut(.escape)
-            }
-            .padding(24)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+            Color.black.opacity(0.25).ignoresSafeArea()
+            WorkProgressPanel(appState: appState)
         }
+    }
+}
+
+struct WorkProgressPanel: View {
+    var appState: AppState
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // 제목 바
+            HStack {
+                Text(appState.workMessage)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(NX.fileText)
+                Spacer()
+                Button { appState.cancelWork() } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(NX.infoText)
+                }
+                .buttonStyle(.borderless)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(NX.headerBg)
+            .overlay(alignment: .bottom) { Rectangle().frame(height: 1).foregroundStyle(NX.separator) }
+
+            VStack(alignment: .leading, spacing: 5) {
+                // 소스 경로
+                pathLine(appState.workSourcePath)
+                // 목적지 경로
+                if !appState.workDestPath.isEmpty {
+                    pathLine(appState.workDestPath)
+                }
+
+                Spacer().frame(height: 2)
+
+                // 현재 파일명
+                Text(appState.workCurrentFile.isEmpty ? " " : appState.workCurrentFile)
+                    .font(.system(size: 11))
+                    .foregroundStyle(NX.infoText)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                // 프로그레스 바
+                ProgressView(value: max(0.001, appState.workProgress))
+                    .tint(Color(hex: "#3DB06B"))  // 녹색
+
+                // 하단: 크기 + 파일수 + 취소 버튼
+                HStack(spacing: 8) {
+                    Text(fmtBytes(appState.workBytes))
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(NX.infoText)
+                    Text("(\(appState.workFileCount))")
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(NX.infoText)
+                    Spacer()
+                    Button("취소(C)") { appState.cancelWork() }
+                        .controlSize(.small)
+                        .keyboardShortcut("c", modifiers: [])
+                }
+                .padding(.top, 2)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+        }
+        .frame(width: 430)
+        .background(NX.bg)
+        .overlay {
+            Rectangle().strokeBorder(NX.separator, lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.6), radius: 24, x: 0, y: 10)
+    }
+
+    @ViewBuilder
+    private func pathLine(_ path: String) -> some View {
+        Text(path.isEmpty ? " " : path)
+            .font(.system(size: 11, design: .monospaced))
+            .foregroundStyle(NX.pathText)
+            .lineLimit(1)
+            .truncationMode(.head)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func fmtBytes(_ b: Int64) -> String {
+        if b < 1024          { return "\(b) B" }
+        if b < 1_048_576     { return String(format: "%.2f KB", Double(b) / 1024) }
+        if b < 1_073_741_824 { return String(format: "%.2f MB", Double(b) / 1_048_576) }
+        return String(format: "%.2f GB", Double(b) / 1_073_741_824)
+    }
+}
+
+// MARK: - Delete Confirm Dialog
+
+struct DeleteConfirmDialog: View {
+    @Environment(AppState.self) private var appState
+    // 0 = 취소 선택, 1 = 삭제 선택
+    @State private var selected = 0
+    @FocusState private var focused: Bool
+
+    private var title: String {
+        let t = appState.deleteTargets
+        if t.count == 1 { return "\"\(t[0].name)\"을(를) 삭제하시겠습니까?" }
+        return "\(t.count)개 항목을 삭제하시겠습니까?"
+    }
+
+    var body: some View {
+        VStack(spacing: 20) {
+            Image(systemName: "trash")
+                .font(.system(size: 28))
+                .foregroundStyle(.red)
+
+            Text(title)
+                .font(.headline)
+                .multilineTextAlignment(.center)
+
+            HStack(spacing: 12) {
+                dialogBtn("취소", isSelected: selected == 0, isDestructive: false) {
+                    cancel()
+                }
+                dialogBtn("삭제", isSelected: selected == 1, isDestructive: true) {
+                    confirm()
+                }
+            }
+        }
+        .padding(28)
+        .frame(width: 340)
+        // 포커스용 투명 뷰로 키보드 이벤트 수신
+        .background(
+            Color.clear
+                .focusable()
+                .focused($focused)
+                .onKeyPress(.leftArrow)  { selected = 0; return .handled }
+                .onKeyPress(.rightArrow) { selected = 1; return .handled }
+                .onKeyPress(.return) {
+                    if selected == 1 { confirm() } else { cancel() }
+                    return .handled
+                }
+                .onKeyPress(.escape) { cancel(); return .handled }
+        )
+        .onAppear {
+            selected = 0       // 기본값: 취소 선택 (안전)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { focused = true }
+        }
+    }
+
+    @ViewBuilder
+    private func dialogBtn(_ label: String, isSelected: Bool,
+                           isDestructive: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(label)
+                .font(.system(size: 13, weight: isSelected ? .semibold : .regular))
+                .frame(width: 80, height: 28)
+                .foregroundStyle(isSelected
+                    ? (isDestructive ? .white : NX.fileText)
+                    : NX.infoText)
+                .background(isSelected
+                    ? (isDestructive ? Color.red : NX.cursor)
+                    : NX.headerBg)
+                .clipShape(RoundedRectangle(cornerRadius: 5))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 5)
+                        .strokeBorder(isSelected ? Color.clear : NX.separator, lineWidth: 1)
+                }
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func confirm() {
+        appState.showDeleteConfirm = false
+        appState.confirmDelete()
+    }
+
+    private func cancel() {
+        appState.showDeleteConfirm = false
+        appState.deleteTargets = []
     }
 }
 

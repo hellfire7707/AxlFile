@@ -67,15 +67,8 @@ struct TabBarView: View {
                     )
                 }
                 Button {
-                    if let url = pane.activeTab?.url {
-                        pane.addTab(url: url)
-                        appState.activePaneID = paneID
-                        Task {
-                            if let t = pane.activeTab {
-                                await appState.loadTab(t, showHidden: appState.showHidden)
-                            }
-                        }
-                    }
+                    appState.activePaneID = paneID
+                    appState.addNewTab(in: pane)
                 } label: {
                     Image(systemName: "plus")
                         .font(.system(size: 10))
@@ -213,10 +206,15 @@ struct PathBarView: View {
 
     private func commitEdit() {
         let p = editText.trimmingCharacters(in: .whitespaces)
-        let url = URL(fileURLWithPath: p)
-        var isDir: ObjCBool = false
-        if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue {
+        if tab.isSFTP, let client = tab.sftpClient {
+            let url = appState.sftpURL(client: client, path: p)
             appState.navigate(tab: tab, to: url)
+        } else {
+            let url = URL(fileURLWithPath: p)
+            var isDir: ObjCBool = false
+            if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue {
+                appState.navigate(tab: tab, to: url)
+            }
         }
     }
 
