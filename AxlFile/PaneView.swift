@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 // MARK: - PaneView
 
@@ -143,7 +144,10 @@ struct PathBarView: View {
         HStack(spacing: 4) {
             Button {
                 let parent = tab.url.deletingLastPathComponent()
-                if parent != tab.url { appState.navigate(tab: tab, to: parent) }
+                if parent != tab.url {
+                    let name = tab.url.lastPathComponent
+                    appState.navigate(tab: tab, to: parent, selectingName: name)
+                }
             } label: {
                 Image(systemName: "chevron.left").font(.system(size: 10, weight: .medium))
             }
@@ -158,29 +162,38 @@ struct PathBarView: View {
                     .onSubmit { commitEdit(); isEditing = false }
                     .onKeyPress(.escape) { isEditing = false; return .handled }
             } else {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 0) {
-                        ForEach(Array(breadcrumbs.enumerated()), id: \.offset) { i, url in
-                            Button {
-                                appState.navigate(tab: tab, to: url)
-                            } label: {
-                                Text(url.lastPathComponent.isEmpty ? "/" : url.lastPathComponent)
-                                    .font(.system(size: 11))
-                                    .foregroundStyle(i == breadcrumbs.count - 1 ? Color.white : NX.pathText)
-                                    .padding(.horizontal, 4)
-                                    .padding(.vertical, 2)
-                                    .background(
-                                        i == breadcrumbs.count - 1
-                                            ? NX.cursor.opacity(0.7)
-                                            : Color.clear
-                                    )
-                                    .clipShape(RoundedRectangle(cornerRadius: 3))
-                            }
-                            .buttonStyle(.plain)
-                            if i < breadcrumbs.count - 1 {
-                                Text("›").font(.system(size: 11)).foregroundStyle(NX.separator)
+                ScrollViewReader { proxy in
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 0) {
+                            ForEach(Array(breadcrumbs.enumerated()), id: \.offset) { i, url in
+                                Button {
+                                    appState.navigate(tab: tab, to: url)
+                                } label: {
+                                    Text(url.lastPathComponent.isEmpty ? "/" : url.lastPathComponent)
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(i == breadcrumbs.count - 1 ? Color.white : NX.pathText)
+                                        .padding(.horizontal, 4)
+                                        .padding(.vertical, 2)
+                                        .background(
+                                            i == breadcrumbs.count - 1
+                                                ? NX.cursor.opacity(0.7)
+                                                : Color.clear
+                                        )
+                                        .clipShape(RoundedRectangle(cornerRadius: 3))
+                                }
+                                .buttonStyle(.plain)
+                                .id(i)
+                                if i < breadcrumbs.count - 1 {
+                                    Text("›").font(.system(size: 11)).foregroundStyle(NX.separator)
+                                }
                             }
                         }
+                    }
+                    .onChange(of: tab.url) { _, _ in
+                        proxy.scrollTo(breadcrumbs.count - 1, anchor: .trailing)
+                    }
+                    .onAppear {
+                        proxy.scrollTo(breadcrumbs.count - 1, anchor: .trailing)
                     }
                 }
                 .contentShape(Rectangle())
@@ -202,6 +215,12 @@ struct PathBarView: View {
         .padding(.vertical, 3)
         .background(NX.pathBg)
         .overlay(alignment: .bottom) { Divider() }
+        .onChange(of: tab.url) { _, _ in
+            if isEditing {
+                editText  = tab.url.path
+                isEditing = false
+            }
+        }
     }
 
     private func commitEdit() {
@@ -337,4 +356,75 @@ struct PaneFileInfoBar: View {
     }
 }
 
+struct VolumeInfo: Identifiable {
+    let id = UUID()
+    let url: URL
+    let name: String
+    let totalBytes: Int64
+    let freeBytes: Int64
+
+    var freeString: String {
+        let b = freeBytes
+        if b <= 0 { return "" }
+        if b < 1_073_741_824 { return String(format: "%.1f MB 남음", Double(b)/1_048_576) }
+        return String(format: "%.1f GB 남음", Double(b)/1_073_741_824)
+    }
+
+    var usedRatio: Double {
+        guard totalBytes > 0 else { return 0 }
+        return Double(totalBytes - freeBytes) / Double(totalBytes)
+    }
+}
+
+struct DriveRowView: View {
+    var vol: VolumeInfo
+    var isCursor: Bool = false
+    var onTap: () -> Void
+    @State private var icon: NSImage?
+    @State private var hovered = false
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Group {
+                if let icon { Image(nsImage: icon).resizable().scaledToFit() }
+                else { Image(systemName: "internaldrive").font(.system(size: 12)) }
+            }
+            .frame(width: 16, height: 16)
+
+            Text(vol.name)
+                .font(.system(size: 11))
+                .foregroundStyle(isCursor ? NX.cursorText : Color(hex: "#4A9EFF"))
+                .lineLimit(1)
+                .truncationMode(.tail)
+
+            Spacer()
+
+            if vol.totalBytes > 0 {
+                GeometryReader { geo in
+                    ZStack(alignment: .leading) {
+                        RoundedRectangle(cornerRadius: 2)
+                            .fill(Color.white.opacity(0.1))
+                        RoundedRectangle(cornerRadius: 2)
+                            .fill(vol.usedRatio > 0.9 ? Color.red.opacity(0.7) : Color(hex: "#3A6EA5"))
+                            .frame(width: geo.size.width * vol.usedRatio)
+                    }
+                }
+                .frame(width: 60, height: 6)
+
+                Text(vol.freeString)
+                    .font(.system(size: 10))
+                    .foregroundStyle(NX.infoText)
+                    .frame(width: 80, alignment: .trailing)
+            }
+        }
+        .padding(.horizontal, 8)
+        .frame(height: 20)
+        .background(isCursor ? NX.cursor : hovered ? NX.cursor.opacity(0.4) : Color.clear)
+        .onHover { hovered = $0 }
+        .onTapGesture { onTap() }
+        .onAppear {
+            icon = NSWorkspace.shared.icon(forFile: vol.url.path)
+        }
+    }
+}
 

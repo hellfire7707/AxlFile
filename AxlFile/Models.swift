@@ -13,7 +13,7 @@ enum SortField: String, CaseIterable {
 // MARK: - FileItem
 
 struct FileItem: Identifiable, Hashable {
-    let id = UUID()
+    let id: UUID
     let url: URL
     let name: String
     let size: Int64
@@ -21,11 +21,26 @@ struct FileItem: Identifiable, Hashable {
     let isDirectory: Bool
     let isHidden: Bool
     let isSymlink: Bool
+    var isParentDir: Bool = false
+
+    init(id: UUID = UUID(), url: URL, name: String, size: Int64,
+         modificationDate: Date, isDirectory: Bool, isHidden: Bool,
+         isSymlink: Bool, isParentDir: Bool = false) {
+        self.id = id; self.url = url; self.name = name; self.size = size
+        self.modificationDate = modificationDate; self.isDirectory = isDirectory
+        self.isHidden = isHidden; self.isSymlink = isSymlink; self.isParentDir = isParentDir
+    }
 
     static func == (lhs: Self, rhs: Self) -> Bool { lhs.id == rhs.id }
     func hash(into hasher: inout Hasher) { hasher.combine(id) }
 
-    var ext: String { url.pathExtension.lowercased() }
+    static func parentDirItem(id: UUID, parentURL: URL) -> FileItem {
+        FileItem(id: id, url: parentURL, name: "..", size: 0,
+                 modificationDate: Date.distantPast,
+                 isDirectory: true, isHidden: false, isSymlink: false, isParentDir: true)
+    }
+
+    var ext: String { isParentDir ? "" : url.pathExtension.lowercased() }
 
     var sizeString: String {
         guard !isDirectory else { return "<DIR>" }
@@ -37,6 +52,7 @@ struct FileItem: Identifiable, Hashable {
     }
 
     var attrString: String {
+        if isParentDir { return "" }
         var s = ""
         s += isHidden  ? "H" : "_"
         s += isSymlink ? "L" : "_"
@@ -61,8 +77,8 @@ struct FileItem: Identifiable, Hashable {
     private static let infoDateFmt: DateFormatter = {
         let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd HH:mm"; return f
     }()
-    var dateString: String     { FileItem.dateFmt.string(from: modificationDate) }
-    var infoDateString: String { FileItem.infoDateFmt.string(from: modificationDate) }
+    var dateString: String     { isParentDir ? "" : FileItem.dateFmt.string(from: modificationDate) }
+    var infoDateString: String { isParentDir ? "" : FileItem.infoDateFmt.string(from: modificationDate) }
 
     var sfSymbol: String {
         if isDirectory { return "folder.fill" }
@@ -153,6 +169,9 @@ class TabInfo: Identifiable {
 
     var isSFTP: Bool { sftpClient != nil }
 
+    // .. 항목에 안정적인 ID 부여 (displayFiles 호출마다 UUID가 바뀌지 않도록)
+    let parentDirID = UUID()
+
     init(url: URL) { self.url = url }
 
     var title: String {
@@ -174,11 +193,19 @@ class TabInfo: Identifiable {
             }
             return sortAscending ? asc : !asc
         }
+        let parent = url.deletingLastPathComponent()
+        if parent != url {
+            items.insert(.parentDirItem(id: parentDirID, parentURL: parent), at: 0)
+        }
         return items
     }
 
     var cursorFile: FileItem? {
         guard let id = cursorID else { return nil }
+        if id == parentDirID {
+            let parent = url.deletingLastPathComponent()
+            return parent != url ? .parentDirItem(id: parentDirID, parentURL: parent) : nil
+        }
         return files.first { $0.id == id }
     }
 

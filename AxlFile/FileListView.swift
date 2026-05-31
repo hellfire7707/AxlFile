@@ -1,5 +1,6 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import AppKit
 
 // MARK: - FileListView
 
@@ -12,6 +13,9 @@ struct FileListView: View {
 
     // Shift 범위 선택의 기준점
     @State private var anchorID: UUID?
+    // 드라이브 목록 & 드라이브 커서
+    @State private var driveVolumes: [VolumeInfo] = []
+    @State private var driveCursorIndex: Int? = nil
 
     private var files: [FileItem] { tab.displayFiles(showHidden: appState.showHidden) }
 
@@ -35,9 +39,10 @@ struct FileListView: View {
                             .onTapGesture {
                                 appState.activePaneID = paneID
                                 focusedPane.wrappedValue = paneID
-                                tab.cursorID    = item.id
-                                tab.selectedIDs = []
-                                anchorID        = nil
+                                tab.cursorID     = item.id
+                                tab.selectedIDs  = []
+                                anchorID         = nil
+                                driveCursorIndex = nil
                             }
                             .simultaneousGesture(TapGesture(count: 2).onEnded {
                                 openItem(item)
@@ -45,11 +50,27 @@ struct FileListView: View {
                             .contextMenu { rowContextMenu(for: item) }
                         }
                     }
+                    DriveListFooter(volumes: driveVolumes, cursorIndex: driveCursorIndex) { vol in
+                        driveCursorIndex = driveVolumes.firstIndex { $0.id == vol.id }
+                        tab.cursorID = nil
+                        tab.selectedIDs = []
+                        appState.navigate(tab: tab, to: vol.url)
+                    } onVolumesLoaded: { loaded in
+                        driveVolumes = loaded
+                    }
                 }
                 .onChange(of: tab.cursorID) { _, newID in
                     if let id = newID {
+                        let anchor: UnitPoint = (id == files.first?.id) ? .top : .center
                         withAnimation(.easeInOut(duration: 0.08)) {
-                            proxy.scrollTo(id, anchor: .center)
+                            proxy.scrollTo(id, anchor: anchor)
+                        }
+                    }
+                }
+                .onChange(of: driveCursorIndex) { _, idx in
+                    if let idx {
+                        withAnimation(.easeInOut(duration: 0.08)) {
+                            proxy.scrollTo("drive_\(idx)", anchor: .center)
                         }
                     }
                 }
@@ -91,10 +112,23 @@ struct FileListView: View {
             return .handled
         case .pageUp:    anchorID = nil; moveCursor(by: -20); return .handled
         case .pageDown:  anchorID = nil; moveCursor(by:  20); return .handled
-        case .home:      anchorID = nil; setCursor(files.first);  return .handled
-        case .end:       anchorID = nil; setCursor(files.last);   return .handled
+        case .home:
+            anchorID = nil; driveCursorIndex = nil; setCursor(files.first); return .handled
+        case .end:
+            anchorID = nil
+            if !driveVolumes.isEmpty {
+                tab.cursorID = nil; driveCursorIndex = driveVolumes.count - 1
+            } else {
+                setCursor(files.last)
+            }
+            return .handled
         case .return:
-            if let item = tab.cursorFile { openItem(item) }
+            if let di = driveCursorIndex, di < driveVolumes.count {
+                appState.navigate(tab: tab, to: driveVolumes[di].url)
+                driveCursorIndex = nil
+            } else if let item = tab.cursorFile {
+                openItem(item)
+            }
             return .handled
         case .tab:
             appState.switchActivePane()
@@ -176,10 +210,28 @@ struct FileListView: View {
     }
 
     private func moveCursor(by delta: Int) {
+        // 드라이브 커서 모드
+        if let di = driveCursorIndex {
+            let next = di + delta
+            if next < 0 {
+                // 드라이브 위로 → 파일 목록 마지막으로
+                driveCursorIndex = nil
+                tab.cursorID = files.last?.id
+            } else {
+                driveCursorIndex = min(next, driveVolumes.count - 1)
+            }
+            return
+        }
         guard !files.isEmpty else { return }
         let cur  = files.firstIndex { $0.id == tab.cursorID } ?? 0
-        let next = max(0, min(files.count - 1, cur + delta))
-        tab.cursorID = files[next].id
+        let next = cur + delta
+        if next >= files.count, !driveVolumes.isEmpty {
+            // 파일 아래로 → 드라이브 첫 항목으로
+            tab.cursorID = nil
+            driveCursorIndex = 0
+        } else {
+            tab.cursorID = files[max(0, min(files.count - 1, next))].id
+        }
     }
 
     private func setCursor(_ item: FileItem?) { tab.cursorID = item?.id }
@@ -200,7 +252,9 @@ struct FileListView: View {
     }
 
     private func openItem(_ item: FileItem) {
-        if item.isDirectory {
+        if item.isParentDir {
+            goUp()
+        } else if item.isDirectory {
             appState.navigate(tab: tab, to: item.url)
         } else if !tab.isSFTP {
             NSWorkspace.shared.open(item.url)
@@ -210,9 +264,10 @@ struct FileListView: View {
 
     private func goUp() {
         guard tab.url.path != "/" else { return }
+        let currentName = tab.url.lastPathComponent
         let parent = tab.url.deletingLastPathComponent()
         guard parent != tab.url else { return }
-        appState.navigate(tab: tab, to: parent)
+        appState.navigate(tab: tab, to: parent, selectingName: currentName)
     }
 
     // 우클릭 대상 아이템 목록 — 우클릭한 항목이 선택에 포함돼 있으면 전체 선택, 아니면 해당 항목만
@@ -272,6 +327,16 @@ struct FileListView: View {
                 NSWorkspace.shared.activateFileViewerSelecting(items.map { $0.url })
             } label: {
                 Label("Finder에서 보기", systemImage: "folder")
+            }
+
+            Button {
+                let dir = first.isDirectory ? first.url : first.url.deletingLastPathComponent()
+                let p = Process()
+                p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+                p.arguments = ["-a", "Terminal", dir.path]
+                try? p.run()
+            } label: {
+                Label("터미널에서 보기", systemImage: "terminal")
             }
 
             Divider()
@@ -556,6 +621,50 @@ struct FileRowView: View {
             return AnyShapeStyle(NX.cursor.opacity(0.40))
         }
         return AnyShapeStyle(rowIndex % 2 == 0 ? NX.rowEven : NX.rowOdd)
+    }
+}
+
+// MARK: - Drive List Footer
+
+struct DriveListFooter: View {
+    var volumes: [VolumeInfo]
+    var cursorIndex: Int?
+    var onTap: (VolumeInfo) -> Void
+    var onVolumesLoaded: ([VolumeInfo]) -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ForEach(Array(volumes.enumerated()), id: \.element.id) { idx, vol in
+                DriveRowView(vol: vol, isCursor: idx == cursorIndex) {
+                    onTap(vol)
+                }
+                .id("drive_\(idx)")
+            }
+        }
+        .task { await load() }
+        .onReceive(NSWorkspace.shared.notificationCenter
+            .publisher(for: NSWorkspace.didMountNotification)) { _ in
+            Task { await load() }
+        }
+        .onReceive(NSWorkspace.shared.notificationCenter
+            .publisher(for: NSWorkspace.didUnmountNotification)) { _ in
+            Task { await load() }
+        }
+    }
+
+    private func load() async {
+        let keys: [URLResourceKey] = [.volumeNameKey, .volumeTotalCapacityKey,
+                                       .volumeAvailableCapacityKey]
+        let urls = FileManager.default.mountedVolumeURLs(
+            includingResourceValuesForKeys: keys, options: [.skipHiddenVolumes]) ?? []
+        let loaded = urls.compactMap { url -> VolumeInfo? in
+            let res = try? url.resourceValues(forKeys: Set(keys))
+            let name = res?.volumeName ?? url.lastPathComponent
+            let total = Int64(res?.volumeTotalCapacity ?? 0)
+            let free  = Int64(res?.volumeAvailableCapacity ?? 0)
+            return VolumeInfo(url: url, name: name, totalBytes: total, freeBytes: free)
+        }
+        onVolumesLoaded(loaded)
     }
 }
 

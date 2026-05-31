@@ -4,9 +4,9 @@ import SwiftUI
 enum NX {
     // ── Backgrounds ──────────────────────────────────
     static let bg           = Color(hex: "#1C1C1C")  // 윈도우 배경
-    static let listBg       = Color(hex: "#080808")  // 파일 목록 배경
-    static let rowEven      = Color(hex: "#0A0A0A")  // 짝수 행
-    static let rowOdd       = Color(hex: "#0F0F0F")  // 홀수 행
+    static let listBg       = Color(hex: "#000000")  // 파일 목록 배경
+    static let rowEven      = Color(hex: "#000000")  // 짝수 행
+    static let rowOdd       = Color(hex: "#050505")  // 홀수 행
     static let headerBg     = Color(hex: "#2A2A2A")  // 컬럼 헤더
     static let tabBarBg     = Color(hex: "#181818")  // 탭 바
     static let tabActive    = Color(hex: "#363636")  // 활성 탭

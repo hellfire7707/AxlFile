@@ -90,7 +90,7 @@ class AppState {
 
     // MARK: - 디렉토리 로드
 
-    func loadTab(_ tab: TabInfo, showHidden: Bool) async {
+    func loadTab(_ tab: TabInfo, showHidden: Bool, selectingName: String? = nil) async {
         if let client = tab.sftpClient {
             await loadSFTPTab(tab, client: client)
             return
@@ -107,8 +107,11 @@ class AppState {
         switch result {
         case .success(let items):
             tab.files = items
-            if tab.cursorID == nil || !items.contains(where: { $0.id == tab.cursorID }) {
-                tab.cursorID = items.first?.id
+            let sorted = tab.displayFiles(showHidden: showHidden)
+            if let name = selectingName, let target = sorted.first(where: { $0.name == name }) {
+                tab.cursorID = target.id
+            } else if tab.cursorID == nil || !items.contains(where: { $0.id == tab.cursorID }) {
+                tab.cursorID = sorted.first?.id
             }
         case .failure(let error):
             tab.files = []
@@ -141,7 +144,7 @@ class AppState {
                 )
             }
             if tab.cursorID == nil || !tab.files.contains(where: { $0.id == tab.cursorID }) {
-                tab.cursorID = tab.files.first?.id
+                tab.cursorID = tab.displayFiles(showHidden: showHidden).first?.id
             }
         case .failure(let error):
             tab.files = []
@@ -154,10 +157,10 @@ class AppState {
         await loadTab(tab, showHidden: showHidden)
     }
 
-    func navigate(tab: TabInfo, to url: URL) {
+    func navigate(tab: TabInfo, to url: URL, selectingName: String? = nil) {
         tab.url = url
         tab.selectedIDs = []
-        Task { await loadTab(tab, showHidden: showHidden) }
+        Task { await loadTab(tab, showHidden: showHidden, selectingName: selectingName) }
     }
 
     // MARK: - 파일 작업 (로컬/SFTP 분기)
