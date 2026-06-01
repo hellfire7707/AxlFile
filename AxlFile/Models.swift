@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import UniformTypeIdentifiers
 
 enum PaneID: Equatable { case left, right }
 
@@ -41,6 +42,20 @@ struct FileItem: Identifiable, Hashable {
     }
 
     var ext: String { isParentDir ? "" : url.pathExtension.lowercased() }
+
+    var kind: String {
+        if isParentDir { return "" }
+        if isDirectory { return "폴더" }
+        // SFTP: 확장자 기반 UTType
+        if url.scheme == "sftp" {
+            let e = url.pathExtension.lowercased()
+            if let t = UTType(filenameExtension: e) { return t.localizedDescription ?? e }
+            return e
+        }
+        // 로컬: 시스템 로컬라이즈 종류명
+        let res = try? url.resourceValues(forKeys: [.localizedTypeDescriptionKey])
+        return res?.localizedTypeDescription ?? url.pathExtension.uppercased()
+    }
 
     var sizeString: String {
         guard !isDirectory else { return "<DIR>" }
@@ -190,7 +205,7 @@ class TabInfo: Identifiable {
             case .name: asc = a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
             case .size: asc = a.size < b.size
             case .date: asc = a.modificationDate < b.modificationDate
-            case .ext:  asc = a.ext.localizedCaseInsensitiveCompare(b.ext) == .orderedAscending
+            case .ext:  asc = a.kind.localizedCaseInsensitiveCompare(b.kind) == .orderedAscending
             }
             return sortAscending ? asc : !asc
         }

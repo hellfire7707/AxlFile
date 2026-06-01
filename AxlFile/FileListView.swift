@@ -534,7 +534,7 @@ struct ColumnHeaderView: View {
         HStack(spacing: 0) {
             Spacer().frame(width: 24) // icon
             colBtn(.name, "이름",   width: nil)
-            colBtn(.ext,  "확장자", width: 52)
+            colBtn(.ext,  "종류", width: 100)
             colBtn(.size, "크기",   width: 80)
             colBtn(.date, "날짜",   width: 116)
             Spacer().frame(width: 24) // attr
@@ -662,11 +662,13 @@ struct FileRowView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.trailing, 4)
 
-            // 확장자
-            Text(item.isDirectory ? "" : item.ext)
+            // 종류
+            Text(item.kind)
                 .font(.system(size: 10))
                 .foregroundStyle(NX.extText)
-                .frame(width: 52, alignment: .leading)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(width: 100, alignment: .leading)
                 .padding(.horizontal, 2)
 
             // 크기
