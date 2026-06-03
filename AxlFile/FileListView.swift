@@ -48,6 +48,7 @@ struct FileListView: View {
                                 .onTapGesture { selectItem(item) }
                                 .simultaneousGesture(TapGesture(count: 2).onEnded { openItem(item) })
                                 .contextMenu { rowContextMenu(for: item) }
+                                .onDrag { dragProvider(for: item) }
                             }
                             // 1~2열 모드: 드라이브를 전체 너비 행으로
                             ForEach(Array(driveVolumes.enumerated()), id: \.element.id) { idx, vol in
@@ -74,6 +75,7 @@ struct FileListView: View {
                                 .onTapGesture { selectItem(item) }
                                 .simultaneousGesture(TapGesture(count: 2).onEnded { openItem(item) })
                                 .contextMenu { rowContextMenu(for: item) }
+                                .onDrag { dragProvider(for: item) }
                             }
                             // 다열 모드: 드라이브도 그리드 셀 1개씩 차지
                             ForEach(Array(driveVolumes.enumerated()), id: \.element.id) { idx, vol in
@@ -242,6 +244,34 @@ struct FileListView: View {
     }
 
     // MARK: - Helpers
+
+    private func dragProvider(for item: FileItem) -> NSItemProvider {
+        guard !item.isParentDir, !tab.isSFTP else { return NSItemProvider() }
+        // 선택된 항목이 여러 개이고 드래그 항목이 선택에 포함된 경우 → 전체 전달
+        let urls: [URL]
+        if tab.selectedIDs.contains(item.id), tab.selectedIDs.count > 1 {
+            urls = files.filter { tab.selectedIDs.contains($0.id) && !$0.isParentDir }.map { $0.url }
+        } else {
+            urls = [item.url]
+        }
+        // NSItemProvider는 단일 URL 제공 — 복수 선택은 pasteboard에 배열로 등록
+        let provider = NSItemProvider()
+        provider.suggestedName = item.name
+        if urls.count == 1 {
+            provider.registerObject(urls[0] as NSURL, visibility: .all)
+        } else {
+            // 다중 파일: 첫 번째 URL을 대표로, 나머지는 파일명 목록으로 등록
+            provider.registerObject(urls[0] as NSURL, visibility: .all)
+            let names = urls.map { $0.path }.joined(separator: "\n")
+            provider.registerDataRepresentation(
+                forTypeIdentifier: "public.plain-text", visibility: .all
+            ) { completion in
+                completion(names.data(using: .utf8), nil)
+                return nil
+            }
+        }
+        return provider
+    }
 
     private func selectItem(_ item: FileItem) {
         appState.activePaneID = paneID
