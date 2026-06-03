@@ -9,7 +9,8 @@ class AppState {
     var rightPane: PaneState
     var activePaneID: PaneID = .left
 
-    var showHidden = false
+    var showHidden   = false
+    var showIconView = false
 
     // 뷰어
     var showViewer = false

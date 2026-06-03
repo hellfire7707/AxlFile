@@ -125,6 +125,17 @@ struct ToolbarView: View {
             .toggleStyle(.button)
             .controlSize(.small)
 
+            // 아이콘 보기 토글
+            Toggle(isOn: Binding(
+                get: { appState.showIconView },
+                set: { appState.showIconView = $0 }
+            )) {
+                Label("아이콘", systemImage: "square.grid.2x2")
+                    .font(.system(size: 10))
+            }
+            .toggleStyle(.button)
+            .controlSize(.small)
+
             tbBtn("arrow.clockwise", "새로고침 (⌘R)") {
                 Task {
                     await appState.reload(pane: appState.leftPane)

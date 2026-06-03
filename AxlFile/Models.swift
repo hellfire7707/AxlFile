@@ -88,11 +88,21 @@ struct FileItem: Identifiable, Hashable {
     private static let dateFmt: DateFormatter = {
         let f = DateFormatter(); f.dateFormat = "yy-MM-dd HH:mm"; return f
     }()
+    private static let dateTimeFmt: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "HH:mm"; return f
+    }()
     // 파일 정보 바용: 4자리 연도
     private static let infoDateFmt: DateFormatter = {
         let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd HH:mm"; return f
     }()
-    var dateString: String     { isParentDir ? "" : FileItem.dateFmt.string(from: modificationDate) }
+    var dateString: String {
+        guard !isParentDir else { return "" }
+        let cal = Calendar.current
+        let time = FileItem.dateTimeFmt.string(from: modificationDate)
+        if cal.isDateInToday(modificationDate)     { return "오늘 \(time)" }
+        if cal.isDateInYesterday(modificationDate) { return "어제 \(time)" }
+        return FileItem.dateFmt.string(from: modificationDate)
+    }
     var infoDateString: String { isParentDir ? "" : FileItem.infoDateFmt.string(from: modificationDate) }
 
     var sfSymbol: String {
