@@ -160,9 +160,29 @@ class AppState {
     }
 
     func navigate(tab: TabInfo, to url: URL, selectingName: String? = nil) {
+        if url != tab.url {
+            tab.historyBack.append(tab.url)
+            tab.historyForward.removeAll()
+        }
         tab.url = url
         tab.selectedIDs = []
         Task { await loadTab(tab, showHidden: showHidden, selectingName: selectingName) }
+    }
+
+    func navigateBack(tab: TabInfo) {
+        guard let prev = tab.historyBack.popLast() else { return }
+        tab.historyForward.append(tab.url)
+        tab.url = prev
+        tab.selectedIDs = []
+        Task { await loadTab(tab, showHidden: showHidden) }
+    }
+
+    func navigateForward(tab: TabInfo) {
+        guard let next = tab.historyForward.popLast() else { return }
+        tab.historyBack.append(tab.url)
+        tab.url = next
+        tab.selectedIDs = []
+        Task { await loadTab(tab, showHidden: showHidden) }
     }
 
     // MARK: - 파일 작업 (로컬/SFTP 분기)

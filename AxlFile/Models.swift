@@ -190,6 +190,9 @@ class TabInfo: Identifiable {
     var sortAscending = true
     var isLoading = false
 
+    var historyBack: [URL] = []
+    var historyForward: [URL] = []
+
     // SFTP 탭: nil이면 로컬 파일시스템
     var sftpClient: SFTPClient?
 

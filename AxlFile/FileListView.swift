@@ -1,6 +1,7 @@
 import SwiftUI
 import UniformTypeIdentifiers
 import AppKit
+import QuickLookThumbnailing
 
 // MARK: - FileListView
 
@@ -73,10 +74,14 @@ struct FileListView: View {
                             )
                             .id(item.id)
                             .contentShape(Rectangle())
-                            .onTapGesture { selectItem(item) }
-                            .simultaneousGesture(TapGesture(count: 2).onEnded { openItem(item) })
                             .contextMenu { rowContextMenu(for: item) }
-                            .onDrag { dragProvider(for: item) }
+                            .overlay(MultiFileDragHandler(
+                                urls: dragURLs(for: item),
+                                onTap: { selectItem(item) },
+                                onDoubleTap: { openItem(item) },
+                                onNavigateBack: { if let t = currentPane.activeTab { appState.navigateBack(tab: t) } },
+                                onNavigateForward: { if let t = currentPane.activeTab { appState.navigateForward(tab: t) } }
+                            ))
                         }
                         ForEach(Array(driveVolumes.enumerated()), id: \.element.id) { idx, vol in
                             DriveRowView(vol: vol, isCursor: idx == tab.driveCursorIndex) {
@@ -99,10 +104,14 @@ struct FileListView: View {
                             )
                             .id(item.id)
                             .contentShape(Rectangle())
-                            .onTapGesture { selectItem(item) }
-                            .simultaneousGesture(TapGesture(count: 2).onEnded { openItem(item) })
                             .contextMenu { rowContextMenu(for: item) }
-                            .onDrag { dragProvider(for: item) }
+                            .overlay(MultiFileDragHandler(
+                                urls: dragURLs(for: item),
+                                onTap: { selectItem(item) },
+                                onDoubleTap: { openItem(item) },
+                                onNavigateBack: { if let t = currentPane.activeTab { appState.navigateBack(tab: t) } },
+                                onNavigateForward: { if let t = currentPane.activeTab { appState.navigateForward(tab: t) } }
+                            ))
                         }
                         ForEach(Array(driveVolumes.enumerated()), id: \.element.id) { idx, vol in
                             DriveGridCellView(vol: vol, isCursor: idx == tab.driveCursorIndex) {
@@ -139,10 +148,14 @@ struct FileListView: View {
                         )
                         .id(item.id)
                         .contentShape(Rectangle())
-                        .onTapGesture { selectItem(item) }
-                        .simultaneousGesture(TapGesture(count: 2).onEnded { openItem(item) })
                         .contextMenu { rowContextMenu(for: item) }
-                        .onDrag { dragProvider(for: item) }
+                        .overlay(MultiFileDragHandler(
+                            urls: dragURLs(for: item),
+                            onTap: { selectItem(item) },
+                            onDoubleTap: { openItem(item) },
+                            onNavigateBack: { if let t = currentPane.activeTab { appState.navigateBack(tab: t) } },
+                            onNavigateForward: { if let t = currentPane.activeTab { appState.navigateForward(tab: t) } }
+                        ))
                     }
                 }
                 .padding(6)
@@ -296,41 +309,34 @@ struct FileListView: View {
 
     // MARK: - Helpers
 
-    private func dragProvider(for item: FileItem) -> NSItemProvider {
-        guard !item.isParentDir, !tab.isSFTP else { return NSItemProvider() }
-        // 선택된 항목이 여러 개이고 드래그 항목이 선택에 포함된 경우 → 전체 전달
-        let urls: [URL]
+    private func dragURLs(for item: FileItem) -> [URL] {
+        guard !item.isParentDir, !tab.isSFTP else { return [] }
         if tab.selectedIDs.contains(item.id), tab.selectedIDs.count > 1 {
-            urls = files.filter { tab.selectedIDs.contains($0.id) && !$0.isParentDir }.map { $0.url }
-        } else {
-            urls = [item.url]
+            return files.filter { tab.selectedIDs.contains($0.id) && !$0.isParentDir }.map { $0.url }
         }
-        // NSItemProvider는 단일 URL 제공 — 복수 선택은 pasteboard에 배열로 등록
-        let provider = NSItemProvider()
-        provider.suggestedName = item.name
-        if urls.count == 1 {
-            provider.registerObject(urls[0] as NSURL, visibility: .all)
-        } else {
-            // 다중 파일: 첫 번째 URL을 대표로, 나머지는 파일명 목록으로 등록
-            provider.registerObject(urls[0] as NSURL, visibility: .all)
-            let names = urls.map { $0.path }.joined(separator: "\n")
-            provider.registerDataRepresentation(
-                forTypeIdentifier: "public.plain-text", visibility: .all
-            ) { completion in
-                completion(names.data(using: .utf8), nil)
-                return nil
-            }
-        }
-        return provider
+        return [item.url]
     }
 
     private func selectItem(_ item: FileItem) {
         appState.activePaneID = paneID
         focusedPane.wrappedValue = paneID
-        tab.cursorID     = item.id
-        tab.selectedIDs  = []
-        anchorID         = nil
         tab.driveCursorIndex = nil
+
+        if NSEvent.modifierFlags.contains(.shift) {
+            if anchorID == nil { anchorID = tab.cursorID ?? item.id }
+            tab.cursorID = item.id
+            guard let anchorID,
+                  let anchorIdx = files.firstIndex(where: { $0.id == anchorID }),
+                  let cursorIdx = files.firstIndex(where: { $0.id == item.id })
+            else { return }
+            let lo = min(anchorIdx, cursorIdx)
+            let hi = max(anchorIdx, cursorIdx)
+            tab.selectedIDs = Set(files[lo...hi].map { $0.id })
+        } else {
+            tab.cursorID    = item.id
+            tab.selectedIDs = [item.id]
+            anchorID        = nil
+        }
     }
 
     private func tapDrive(idx: Int, vol: VolumeInfo) {
@@ -650,11 +656,14 @@ struct ColumnHeaderView: View {
 
 // MARK: - Finder Icon View
 
+private let imageExtensions: Set<String> = ["jpg","jpeg","png","gif","webp","heic","tiff","bmp"]
+
 // NSWorkspace에서 실제 Finder 아이콘을 가져와 표시 (로컬·SFTP 공용)
 struct FinderIconView: View {
     let url: URL
     var isDirectory: Bool = false
     var size: CGFloat = 16
+    var showThumbnail: Bool = false
     @State private var icon: NSImage?
 
     var body: some View {
@@ -670,8 +679,59 @@ struct FinderIconView: View {
         .frame(width: size, height: size)
         .onAppear {
             guard icon == nil else { return }
-            icon = FinderIconCache.shared.icon(for: url, isDirectory: isDirectory)
+            if showThumbnail && !isDirectory && url.scheme != "sftp"
+                && imageExtensions.contains(url.pathExtension.lowercased()) {
+                loadThumbnail()
+            } else {
+                icon = FinderIconCache.shared.icon(for: url, isDirectory: isDirectory)
+            }
         }
+    }
+
+    private func loadThumbnail() {
+        if let cached = ThumbnailCache.shared.get(url: url) {
+            icon = cached
+            return
+        }
+        let scale = NSScreen.main?.backingScaleFactor ?? 2.0
+        let pixelSize = size * scale
+        let request = QLThumbnailGenerator.Request(
+            fileAt: url,
+            size: CGSize(width: pixelSize, height: pixelSize),
+            scale: scale,
+            representationTypes: .thumbnail
+        )
+        Task {
+            if let rep = try? await QLThumbnailGenerator.shared.generateBestRepresentation(for: request) {
+                let img = NSImage(cgImage: rep.cgImage, size: CGSize(width: size, height: size))
+                ThumbnailCache.shared.set(url: url, image: img)
+                icon = img
+            } else {
+                icon = FinderIconCache.shared.icon(for: url, isDirectory: isDirectory)
+            }
+        }
+    }
+}
+
+@MainActor
+final class ThumbnailCache {
+    static let shared = ThumbnailCache()
+    private var cache: [String: NSImage] = [:]
+    private var order: [String] = []
+    private let limit = 500
+
+    func get(url: URL) -> NSImage? { cache[url.path] }
+
+    func set(url: URL, image: NSImage) {
+        let key = url.path
+        if cache[key] == nil {
+            order.append(key)
+            if order.count > limit {
+                let removed = order.removeFirst()
+                cache.removeValue(forKey: removed)
+            }
+        }
+        cache[key] = image
     }
 }
 
@@ -851,7 +911,7 @@ struct FileIconCellView: View {
 
     var body: some View {
         VStack(spacing: 5) {
-            FinderIconView(url: item.url, isDirectory: item.isDirectory, size: 60)
+            FinderIconView(url: item.url, isDirectory: item.isDirectory, size: 60, showThumbnail: true)
             Text(item.name)
                 .font(.system(size: 11))
                 .foregroundStyle(nameTint)
@@ -912,6 +972,95 @@ struct DriveGridCellView: View {
         .onHover { hovered = $0 }
         .onTapGesture { onTap() }
         .onAppear { icon = NSWorkspace.shared.icon(forFile: vol.url.path) }
+    }
+}
+
+// MARK: - Multi File Drag Handler
+
+private struct MultiFileDragHandler: NSViewRepresentable {
+    let urls: [URL]
+    var onTap: (() -> Void)?
+    var onDoubleTap: (() -> Void)?
+    var onNavigateBack: (() -> Void)?
+    var onNavigateForward: (() -> Void)?
+
+    func makeNSView(context: Context) -> MultiFileDragNSView {
+        MultiFileDragNSView()
+    }
+
+    func updateNSView(_ nsView: MultiFileDragNSView, context: Context) {
+        nsView.dragURLs = urls
+        nsView.onTap = onTap
+        nsView.onDoubleTap = onDoubleTap
+        nsView.onNavigateBack = onNavigateBack
+        nsView.onNavigateForward = onNavigateForward
+    }
+}
+
+final class MultiFileDragNSView: NSView, NSDraggingSource {
+    var dragURLs: [URL] = []
+    var onTap: (() -> Void)?
+    var onDoubleTap: (() -> Void)?
+    var onNavigateBack: (() -> Void)?
+    var onNavigateForward: (() -> Void)?
+    private var mouseDownEvent: NSEvent?
+    private var didDrag = false
+
+    override var isFlipped: Bool { true }
+
+    override func mouseDown(with event: NSEvent) {
+        mouseDownEvent = event
+        didDrag = false
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        defer { mouseDownEvent = nil; didDrag = false }
+        guard !didDrag else { return }
+        if event.clickCount >= 2 {
+            onDoubleTap?()
+        } else {
+            onTap?()
+        }
+    }
+
+    override func otherMouseDown(with event: NSEvent) {
+        if event.buttonNumber == 3 {
+            onNavigateBack?()
+        } else if event.buttonNumber == 4 {
+            onNavigateForward?()
+        } else {
+            super.otherMouseDown(with: event)
+        }
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let downEvent = mouseDownEvent, !dragURLs.isEmpty else {
+            super.mouseDragged(with: event)
+            return
+        }
+        didDrag = true
+        mouseDownEvent = nil
+
+        let loc = convert(downEvent.locationInWindow, from: nil)
+        let items: [NSDraggingItem] = dragURLs.prefix(10).enumerated().compactMap { i, url in
+            guard url.isFileURL else { return nil }
+            let pbItem = NSDraggingItem(pasteboardWriter: url as NSURL)
+            let icon = NSWorkspace.shared.icon(forFile: url.path)
+            let off = CGFloat(i) * 2
+            pbItem.setDraggingFrame(
+                NSRect(x: loc.x - 16 + off, y: loc.y - 16 + off, width: 32, height: 32),
+                contents: icon
+            )
+            return pbItem
+        }
+
+        guard !items.isEmpty else { return }
+        beginDraggingSession(with: items, event: downEvent, source: self)
+    }
+
+    func draggingSession(_ session: NSDraggingSession,
+                         sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
+        return [.copy, .move, .link, .delete]
     }
 }
 
