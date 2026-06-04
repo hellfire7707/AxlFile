@@ -41,22 +41,47 @@ class AppState {
     var isWorking       = false
     var workProgress:   Double = 0
     var workMessage     = ""
-    var workCurrentFile = ""    // 현재 처리 중인 파일명
-    var workSourcePath  = ""    // 소스 경로
-    var workDestPath    = ""    // 목적지 경로
-    var workBytes:      Int64 = 0  // 누적 처리 바이트
-    var workFileCount   = 0    // 처리된 파일 수
-    var workTotalCount  = 0    // 전체 대상 파일 수
+    var workCurrentFile = ""
+    var workSourcePath  = ""
+    var workDestPath    = ""
+    var workBytes:      Int64 = 0
+    var workFileCount   = 0
+    var workTotalCount  = 0
     var workCancelled   = false
     private(set) var currentOperationMgr: FileOperationManager?
 
     // 상태 표시줄
     var statusMessage = ""
 
+    // MARK: - 즐겨찾기
+    var bookmarks: [Bookmark] = []
+    var showBookmarks = false
+
+    // MARK: - 커맨드 바
+    var showCommandBar = false
+    var commandText = ""
+    var commandOutput = ""
+    var commandHistory: [String] = []
+    var commandIsRunning = false
+
+    // MARK: - Diff
+    var showDiff = false
+    var diffLeftURL: URL?
+    var diffRightURL: URL?
+
+    // MARK: - 권한 편집
+    var showPermissions = false
+    var permissionsTarget: URL?
+
+    // MARK: - 압축 (ZIP 이름 입력)
+    var showZipName = false
+    var zipNameText = ""
+
     init() {
         let home = FileManager.default.homeDirectoryForCurrentUser
         leftPane  = PaneState(url: home)
         rightPane = PaneState(url: home)
+        loadBookmarks()
     }
 
     var activePane:   PaneState { activePaneID == .left ? leftPane : rightPane }
@@ -660,6 +685,158 @@ class AppState {
                 await reload(pane: activePane)
                 statusMessage = "이름 변경: \(newName)"
             } catch { statusMessage = "오류: \(error.localizedDescription)" }
+        }
+    }
+
+    // MARK: - 즐겨찾기
+
+    func addBookmark(url: URL, name: String? = nil) {
+        let bm = Bookmark(name: name ?? url.lastPathComponent, path: url.path)
+        bookmarks.append(bm)
+        saveBookmarks()
+    }
+
+    func removeBookmark(id: UUID) {
+        bookmarks.removeAll { $0.id == id }
+        saveBookmarks()
+    }
+
+    func renameBookmark(id: UUID, name: String) {
+        if let i = bookmarks.firstIndex(where: { $0.id == id }) {
+            bookmarks[i].name = name
+            saveBookmarks()
+        }
+    }
+
+    private func loadBookmarks() {
+        if let data = UserDefaults.standard.data(forKey: "axlfile.bookmarks"),
+           let decoded = try? JSONDecoder().decode([Bookmark].self, from: data) {
+            bookmarks = decoded
+        }
+    }
+
+    private func saveBookmarks() {
+        if let data = try? JSONEncoder().encode(bookmarks) {
+            UserDefaults.standard.set(data, forKey: "axlfile.bookmarks")
+        }
+    }
+
+    // MARK: - 커맨드 바
+
+    func executeCommand() {
+        let cmd = commandText.trimmingCharacters(in: .whitespaces)
+        guard !cmd.isEmpty else { return }
+        commandHistory.append(cmd)
+        commandText = ""
+        commandIsRunning = true
+        let cwd = activePane.activeTab?.url.path ?? FileManager.default.homeDirectoryForCurrentUser.path
+        Task {
+            let output = await runShellCommand(cmd, cwd: cwd)
+            commandOutput = output
+            commandIsRunning = false
+            if let tab = activePane.activeTab { await loadTab(tab, showHidden: showHidden) }
+        }
+    }
+
+    private func runShellCommand(_ command: String, cwd: String) async -> String {
+        await withCheckedContinuation { cont in
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+            process.arguments = ["-c", command]
+            process.currentDirectoryURL = URL(fileURLWithPath: cwd)
+            let outPipe = Pipe(), errPipe = Pipe()
+            process.standardOutput = outPipe
+            process.standardError  = errPipe
+            do {
+                try process.run()
+                process.terminationHandler = { _ in
+                    let out = String(data: outPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+                    let err = String(data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+                    let combined = (out + err).trimmingCharacters(in: CharacterSet.newlines)
+                    cont.resume(returning: combined.isEmpty ? "(출력 없음)" : combined)
+                }
+            } catch {
+                cont.resume(returning: "오류: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    // MARK: - Diff
+
+    func openDiff() {
+        guard activePane.activeTab?.isSFTP == false,
+              oppositePane.activeTab?.isSFTP == false,
+              let src = activePane.activeTab?.cursorFile,
+              !src.isDirectory, !src.isParentDir,
+              let dst = oppositePane.activeTab?.files.first(where: { $0.name == src.name }) else {
+            statusMessage = "반대 패널에 동일한 이름의 파일이 없습니다"
+            return
+        }
+        diffLeftURL  = activePaneID == .left ? src.url : dst.url
+        diffRightURL = activePaneID == .left ? dst.url : src.url
+        showDiff = true
+    }
+
+    // MARK: - 압축
+
+    func extractCursorFile() {
+        guard let tab = activePane.activeTab, !tab.isSFTP,
+              let item = tab.cursorFile,
+              !item.isParentDir, !item.isDirectory,
+              isArchiveFile(item.url) else {
+            statusMessage = "압축 파일을 선택하세요"
+            return
+        }
+        let dstName = item.url.deletingPathExtension().lastPathComponent
+        let dst = tab.url.appendingPathComponent(dstName)
+        Task {
+            resetWorkState(message: "압축 해제 중...")
+            defer { isWorking = false; workProgress = 0; workMessage = "" }
+            do {
+                workCurrentFile = item.name
+                workProgress = 0.1
+                try await extractArchive(at: item.url, to: dst)
+                await reload(pane: activePane)
+                statusMessage = "압축 해제 완료: \(dstName)"
+            } catch {
+                await reload(pane: activePane)
+                statusMessage = "압축 해제 실패: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    func packSelection() {
+        guard let tab = activePane.activeTab else { return }
+        let items = tab.effectiveSelections.filter { !$0.isParentDir }
+        guard !items.isEmpty, !tab.isSFTP else {
+            statusMessage = "로컬 파일을 선택하세요"
+            return
+        }
+        let defaultName = items.count == 1 ? items[0].name + ".zip" : "archive.zip"
+        zipNameText = defaultName
+        showZipName = true
+    }
+
+    func confirmPackSelection() {
+        guard let tab = activePane.activeTab else { return }
+        let items = tab.effectiveSelections.filter { !$0.isParentDir }
+        guard !items.isEmpty else { return }
+        let name = zipNameText.hasSuffix(".zip") ? zipNameText : zipNameText + ".zip"
+        let dst = tab.url.appendingPathComponent(name)
+        let urls = items.map { $0.url }
+        Task {
+            resetWorkState(message: "압축 중...")
+            defer { isWorking = false; workProgress = 0; workMessage = "" }
+            do {
+                workCurrentFile = name
+                workProgress = 0.1
+                try await createZip(from: urls, to: dst)
+                await reload(pane: activePane)
+                statusMessage = "압축 완료: \(name)"
+            } catch {
+                await reload(pane: activePane)
+                statusMessage = "압축 실패: \(error.localizedDescription)"
+            }
         }
     }
 

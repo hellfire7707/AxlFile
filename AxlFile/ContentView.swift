@@ -17,6 +17,10 @@ struct ContentView: View {
                 .environment(appState)
             DualPaneView()
                 .environment(appState)
+            if appState.showCommandBar {
+                CommandBarView()
+                    .environment(appState)
+            }
             FunctionKeyBar()
                 .environment(appState)
         }
@@ -36,9 +40,21 @@ struct ContentView: View {
             SFTPConnectView().environment(appState)
         }
         .sheet(isPresented: Binding(get: { appState.showProperties }, set: { appState.showProperties = $0 })) {
-            if let url = appState.propertiesTarget {
-                PropertiesView(url: url)
+            if let url = appState.propertiesTarget { PropertiesView(url: url) }
+        }
+        .sheet(isPresented: Binding(get: { appState.showBookmarks }, set: { appState.showBookmarks = $0 })) {
+            BookmarkView().environment(appState)
+        }
+        .sheet(isPresented: Binding(get: { appState.showDiff }, set: { appState.showDiff = $0 })) {
+            if let l = appState.diffLeftURL, let r = appState.diffRightURL {
+                DiffView(leftURL: l, rightURL: r)
             }
+        }
+        .sheet(isPresented: Binding(get: { appState.showPermissions }, set: { appState.showPermissions = $0 })) {
+            if let url = appState.permissionsTarget { PermissionsView(url: url) }
+        }
+        .sheet(isPresented: Binding(get: { appState.showZipName }, set: { appState.showZipName = $0 })) {
+            ZipNameDialog().environment(appState)
         }
         .overlay {
             if appState.isWorking { WorkingOverlay().environment(appState) }
@@ -57,7 +73,7 @@ struct ContentView: View {
                 await appState.loadTab(rt, showHidden: appState.showHidden)
             }
         }
-        .preferredColorScheme(.dark)  // Nexus File 스타일 다크 테마 고정
+        .preferredColorScheme(.dark)
     }
 }
 
@@ -105,6 +121,9 @@ struct ToolbarView: View {
 
             Divider().frame(height: 20).padding(.horizontal, 4)
             tbBtn("network",              "SFTP") { appState.showFTP = true }
+            tbBtn("bookmark",             "즐겨찾기 (⌘D)") { appState.showBookmarks = true }
+            tbBtn("arrow.left.arrow.right", "파일 비교") { appState.openDiff() }
+            tbBtn("terminal",             "커맨드 바 (F12)") { appState.showCommandBar.toggle() }
 
             Spacer()
 
@@ -253,6 +272,9 @@ struct FunctionKeyBar: View {
                         await appState.reload(pane: appState.rightPane)
                     }
                 }
+                div()
+                // F6 ZIP 압축
+                fKey("F6", "Pack") { appState.packSelection() }
                 div()
                 // F7 새 폴더
                 fKey("F7", "New Folder") {
@@ -582,6 +604,49 @@ struct NewFolderDialog: View {
         }
         .padding(24)
         .onAppear { focused = true }
+    }
+}
+
+// MARK: - Zip Name Dialog
+
+struct ZipNameDialog: View {
+    @Environment(AppState.self) private var appState
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        VStack(spacing: 16) {
+            HStack(spacing: 10) {
+                Image(systemName: "archivebox.fill")
+                    .font(.title2)
+                    .foregroundStyle(NX.folderText)
+                Text("ZIP 압축").font(.headline)
+            }
+            TextField("압축 파일 이름", text: Binding(
+                get: { appState.zipNameText },
+                set: { appState.zipNameText = $0 }
+            ))
+            .focused($focused)
+            .textFieldStyle(.roundedBorder)
+            .frame(width: 300)
+            .onSubmit { confirm() }
+            HStack {
+                Button("취소") { appState.showZipName = false }
+                    .keyboardShortcut(.escape)
+                Button("압축") { confirm() }
+                    .keyboardShortcut(.return)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(appState.zipNameText.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+        .padding(24)
+        .onAppear { focused = true }
+    }
+
+    private func confirm() {
+        let name = appState.zipNameText.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else { return }
+        appState.showZipName = false
+        appState.confirmPackSelection()
     }
 }
 

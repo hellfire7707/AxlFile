@@ -258,6 +258,15 @@ class TabInfo: Identifiable {
     }
 }
 
+// MARK: - Bookmark
+
+struct Bookmark: Identifiable, Codable {
+    var id = UUID()
+    var name: String
+    var path: String
+    var url: URL { URL(fileURLWithPath: path) }
+}
+
 // MARK: - PaneState
 
 @Observable

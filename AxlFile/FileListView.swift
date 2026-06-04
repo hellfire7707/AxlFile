@@ -18,6 +18,8 @@ struct FileListView: View {
     @State private var driveVolumes: [VolumeInfo] = []
     // 아이콘 뷰 열 수 (GeometryReader로 업데이트)
     @State private var iconColCount: Int = 5
+    // 퀵서치
+    @State private var quickSearch = ""
 
     private var files: [FileItem] { tab.displayFiles(showHidden: appState.showHidden) }
 
@@ -37,6 +39,9 @@ struct FileListView: View {
             } else {
                 if columnCount <= 2 { ColumnHeaderView(tab: tab) }
                 listScrollView
+            }
+            if !quickSearch.isEmpty {
+                QuickSearchBar(text: quickSearch) { quickSearch = "" }
             }
         }
         .background(NX.listBg)
@@ -184,6 +189,12 @@ struct FileListView: View {
     }
 
     private func handleKey(_ press: KeyPress) -> KeyPress.Result {
+        // ESC: 퀵서치 종료 → 그 외엔 무시
+        if press.key == .escape {
+            if !quickSearch.isEmpty { quickSearch = ""; return .handled }
+            return .ignored
+        }
+
         switch press.key {
         case .upArrow:
             if press.modifiers.contains(.shift) {
@@ -265,8 +276,15 @@ struct FileListView: View {
             }
             return .handled
 
-        // Backspace — 상위 폴더
-        case "\u{7F}", "\u{8}": goUp(); return .handled
+        // Backspace — 퀵서치 중이면 한 글자 삭제, 아니면 상위 폴더
+        case "\u{7F}", "\u{8}":
+            if !quickSearch.isEmpty {
+                quickSearch = String(quickSearch.dropLast())
+                jumpToSearch()
+            } else {
+                goUp()
+            }
+            return .handled
 
         // ── F키 (macOS: F1=\u{F704}, F2=\u{F705}, F3=\u{F706}, ...) ──
         // F2 이름 변경
@@ -300,10 +318,44 @@ struct FileListView: View {
         // F8 삭제 (휴지통)  |  fn+Delete(Forward Delete) 도 동일
         case "\u{F70B}", "\u{F728}": appState.deleteSelection(); return .handled
 
+        // F6 ZIP 압축
+        case "\u{F709}": appState.packSelection(); return .handled
+
         // F9 FTP
         case "\u{F70C}": appState.showFTP = true; return .handled
 
-        default: return .ignored
+        // F11 Diff
+        case "\u{F70E}": appState.openDiff(); return .handled
+
+        // F12 커맨드 바 토글
+        case "\u{F70F}": appState.showCommandBar.toggle(); return .handled
+
+        default:
+            // 퀵서치: 인쇄 가능 문자, Cmd/Ctrl/Option 없을 때
+            if !press.modifiers.contains(.command) &&
+               !press.modifiers.contains(.control) &&
+               !press.modifiers.contains(.option) {
+                let ch = press.characters
+                if !ch.isEmpty, let scalar = ch.unicodeScalars.first,
+                   scalar.value >= 32 {
+                    quickSearch += ch
+                    jumpToSearch()
+                    return .handled
+                }
+            }
+            // Cmd+D: 즐겨찾기
+            if press.modifiers.contains(.command) && press.characters == "d" {
+                appState.showBookmarks = true
+                return .handled
+            }
+            // Cmd+1~9: 즐겨찾기 바로 이동
+            if press.modifiers.contains(.command),
+               let n = Int(press.characters), (1...9).contains(n),
+               n <= appState.bookmarks.count {
+                appState.navigate(tab: tab, to: appState.bookmarks[n-1].url)
+                return .handled
+            }
+            return .ignored
         }
     }
 
@@ -427,6 +479,14 @@ struct FileListView: View {
               let anchorIdx = files.firstIndex(where: { $0.id == anchorID })
         else { return }
         tab.selectedIDs = Set(files[0...anchorIdx].map { $0.id })
+    }
+
+    private func jumpToSearch() {
+        guard !quickSearch.isEmpty else { return }
+        let q = quickSearch.lowercased()
+        if let match = files.first(where: { !$0.isParentDir && $0.name.lowercased().hasPrefix(q) }) {
+            tab.cursorID = match.id
+        }
     }
 
     private func openItem(_ item: FileItem) {
@@ -599,8 +659,48 @@ struct FileListView: View {
             Label("전체 선택", systemImage: "checkmark.circle")
         }
 
+        // 압축/해제
+        if !tab.isSFTP {
+            Divider()
+
+            if isSingle && !first.isDirectory && isArchiveFile(first.url) {
+                Button {
+                    tab.cursorID = first.id
+                    appState.extractCursorFile()
+                } label: {
+                    Label("압축 풀기", systemImage: "archivebox")
+                }
+            }
+
+            Button {
+                tab.cursorID = first.id
+                if !tab.selectedIDs.contains(first.id) { tab.selectedIDs = [] }
+                appState.packSelection()
+            } label: {
+                Label("ZIP으로 압축 (F6)", systemImage: "archivebox.fill")
+            }
+
+            // Diff
+            if isSingle && !first.isDirectory &&
+               appState.oppositePane.activeTab?.files.contains(where: { $0.name == first.name }) == true {
+                Button {
+                    tab.cursorID = first.id
+                    appState.openDiff()
+                } label: {
+                    Label("파일 비교 (F11)", systemImage: "arrow.left.arrow.right")
+                }
+            }
+        }
+
         if isSingle && !tab.isSFTP {
             Divider()
+
+            Button {
+                appState.permissionsTarget = first.url
+                appState.showPermissions   = true
+            } label: {
+                Label("권한 편집 (chmod)", systemImage: "lock.shield")
+            }
 
             Button {
                 appState.propertiesTarget = first.url
@@ -1061,6 +1161,35 @@ final class MultiFileDragNSView: NSView, NSDraggingSource {
     func draggingSession(_ session: NSDraggingSession,
                          sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
         return [.copy, .move, .link, .delete]
+    }
+}
+
+// MARK: - Quick Search Bar
+
+private struct QuickSearchBar: View {
+    let text: String
+    let onClear: () -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 10))
+                .foregroundStyle(NX.folderText)
+            Text(text)
+                .font(.system(size: 12, design: .monospaced))
+                .foregroundStyle(Color.white)
+            Spacer()
+            Button(action: onClear) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(NX.infoText)
+            }
+            .buttonStyle(.borderless)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(NX.cursor.opacity(0.9))
+        .overlay(alignment: .top) { Rectangle().frame(height: 1).foregroundStyle(NX.separator) }
     }
 }
 
