@@ -13,8 +13,6 @@ struct ContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            ToolbarView()
-                .environment(appState)
             DualPaneView()
                 .environment(appState)
             if appState.showCommandBar {
@@ -78,110 +76,6 @@ struct ContentView: View {
 }
 
 // MARK: - Toolbar (상단 아이콘 바)
-
-struct ToolbarView: View {
-    @Environment(AppState.self) private var appState
-
-    var body: some View {
-        HStack(spacing: 2) {
-            // 탐색
-            tbBtn("chevron.left", "뒤로") {
-                let tab = appState.activePane.activeTab
-                if let t = tab {
-                    let parent = t.url.deletingLastPathComponent()
-                    if parent != t.url { appState.navigate(tab: t, to: parent) }
-                }
-            }
-
-            Divider().frame(height: 20).padding(.horizontal, 4)
-
-            // 파일 작업
-            tbBtn("doc.on.doc",           "복사 (F5)") { appState.copySelectionToOpposite() }
-            tbBtn("arrow.right.doc.on.clipboard", "이동 (F6)") { appState.moveSelectionToOpposite() }
-            tbBtn("folder.badge.plus",    "새 폴더 (F7)") {
-                appState.newFolderName = ""
-                appState.showNewFolder = true
-            }
-            tbBtn("trash",                "삭제 (F8)") { appState.deleteSelection() }
-
-            Divider().frame(height: 20).padding(.horizontal, 4)
-
-            // 보기
-            tbBtn("eye",                  "보기 (F3)") {
-                if let item = appState.activePane.activeTab?.cursorFile, !item.isDirectory {
-                    appState.viewerURL = item.url
-                    appState.showViewer = true
-                }
-            }
-            tbBtn("pencil",               "편집 (F4)") {
-                if let item = appState.activePane.activeTab?.cursorFile {
-                    NSWorkspace.shared.open(item.url)
-                }
-            }
-
-            Divider().frame(height: 20).padding(.horizontal, 4)
-            tbBtn("network",              "SFTP") { appState.showFTP = true }
-            tbBtn("bookmark",             "즐겨찾기 (⌘D)") { appState.showBookmarks = true }
-            tbBtn("arrow.left.arrow.right", "파일 비교") { appState.openDiff() }
-            tbBtn("terminal",             "커맨드 바 (F12)") { appState.showCommandBar.toggle() }
-
-            Spacer()
-
-            // 숨김 파일 토글
-            Toggle(isOn: Binding(
-                get: { appState.showHidden },
-                set: { v in
-                    appState.showHidden = v
-                    Task {
-                        await appState.reload(pane: appState.leftPane)
-                        await appState.reload(pane: appState.rightPane)
-                    }
-                }
-            )) {
-                Label("숨김", systemImage: "eye.slash")
-                    .font(.system(size: 10))
-            }
-            .toggleStyle(.button)
-            .controlSize(.small)
-
-            // 아이콘 보기 토글
-            Toggle(isOn: Binding(
-                get: { appState.showIconView },
-                set: { appState.showIconView = $0 }
-            )) {
-                Label("아이콘", systemImage: "square.grid.2x2")
-                    .font(.system(size: 10))
-            }
-            .toggleStyle(.button)
-            .controlSize(.small)
-
-            tbBtn("arrow.clockwise", "새로고침 (⌘R)") {
-                Task {
-                    await appState.reload(pane: appState.leftPane)
-                    await appState.reload(pane: appState.rightPane)
-                }
-            }
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 5)
-        .background(NX.bg)
-        .overlay(alignment: .bottom) {
-            Rectangle().frame(height: 1).foregroundStyle(NX.separator)
-        }
-    }
-
-    @ViewBuilder
-    private func tbBtn(_ icon: String, _ tip: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: icon)
-                .font(.system(size: 14))
-                .foregroundStyle(NX.infoText)
-                .frame(width: 28, height: 28)
-        }
-        .buttonStyle(.borderless)
-        .help(tip)
-    }
-}
 
 // MARK: - File Info Bar  ── 67,584 | 2013-03-10 16:43 | A_S | bootstat.dat
 
