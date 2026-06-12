@@ -263,15 +263,15 @@ struct FolderInfoBar: View {
         HStack(spacing: 6) {
             // 폴더/파일 수
             Text("\(info.dirs)개 폴더")
-                .font(.system(size: 10))
+                .font(.system(size: 11))
                 .foregroundStyle(NX.infoText)
-            Text("·").foregroundStyle(NX.separator).font(.system(size: 10))
+            Text("·").foregroundStyle(NX.separator).font(.system(size: 11))
             Text("\(info.files)개 파일")
-                .font(.system(size: 10))
+                .font(.system(size: 11))
                 .foregroundStyle(NX.infoText)
             if info.totalSize > 0 {
                 Text("(\(fmtSize(info.totalSize)))")
-                    .font(.system(size: 10))
+                    .font(.system(size: 11))
                     .foregroundStyle(NX.attrText)
             }
 
@@ -284,7 +284,7 @@ struct FolderInfoBar: View {
             iBtn("folder.badge.plus",            "새 폴더 (F7)") { activate(); appState.newFolderName = ""; appState.showNewFolder = true }
             iBtn("trash",                        "삭제 (F8)")    { activate(); appState.deleteSelection() }
 
-            Divider().frame(height: 10).padding(.horizontal, 1)
+            Divider().frame(height: 11).padding(.horizontal, 1)
 
             // 유틸리티
             iBtn("network",                "SFTP 연결 (F9)")  { appState.showFTP = true }
@@ -292,7 +292,7 @@ struct FolderInfoBar: View {
             iBtn("arrow.left.arrow.right", "파일 비교 (F11)") { activate(); appState.openDiff() }
             iBtn("terminal",               "커맨드 바 (F12)") { appState.showCommandBar.toggle() }
 
-            Divider().frame(height: 10).padding(.horizontal, 1)
+            Divider().frame(height: 11).padding(.horizontal, 1)
 
             // 숨김 토글
             Button {
@@ -303,9 +303,9 @@ struct FolderInfoBar: View {
                 }
             } label: {
                 Image(systemName: appState.showHidden ? "eye" : "eye.slash")
-                    .font(.system(size: 9))
+                    .font(.system(size: 10))
                     .foregroundStyle(appState.showHidden ? Color.accentColor : NX.infoText)
-                    .frame(width: 16, height: 16)
+                    .frame(width: 18, height: 18)
             }
             .buttonStyle(.borderless)
             .help(appState.showHidden ? "숨김 파일 숨기기" : "숨김 파일 표시")
@@ -315,24 +315,24 @@ struct FolderInfoBar: View {
                 appState.showIconView.toggle()
             } label: {
                 Image(systemName: "square.grid.2x2")
-                    .font(.system(size: 9))
+                    .font(.system(size: 10))
                     .foregroundStyle(appState.showIconView ? Color.accentColor : NX.infoText)
-                    .frame(width: 16, height: 16)
+                    .frame(width: 18, height: 18)
             }
             .buttonStyle(.borderless)
             .help("아이콘 뷰 전환")
 
-            Divider().frame(height: 10).padding(.horizontal, 1)
+            Divider().frame(height: 11).padding(.horizontal, 1)
 
             // 여유 공간
             if diskFree > 0 {
                 Text("여유 \(fmtSize(diskFree))")
-                    .font(.system(size: 10))
+                    .font(.system(size: 11))
                     .foregroundStyle(NX.infoText)
             }
         }
         .padding(.horizontal, 8)
-        .padding(.vertical, 2)
+        .padding(.vertical, 3)
         .background(NX.headerBg)
         .overlay(alignment: .bottom) {
             Rectangle().frame(height: 1).foregroundStyle(NX.separator)
@@ -350,9 +350,9 @@ struct FolderInfoBar: View {
     private func iBtn(_ icon: String, _ tip: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: icon)
-                .font(.system(size: 9))
+                .font(.system(size: 10))
                 .foregroundStyle(NX.infoText)
-                .frame(width: 16, height: 16)
+                .frame(width: 18, height: 18)
         }
         .buttonStyle(.borderless)
         .help(tip)
