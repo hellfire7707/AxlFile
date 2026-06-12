@@ -22,10 +22,10 @@ struct PaneView: View {
                 .environment(appState)
 
             if let tab = pane.activeTab {
-                PathBarView(tab: tab, pane: pane, paneID: paneID)
+                PathBarView(tab: tab)
                     .environment(appState)
 
-                FolderInfoBar(tab: tab)
+                FolderInfoBar(tab: tab, pane: pane, paneID: paneID)
                     .environment(appState)
 
                 FileListView(
@@ -136,15 +136,12 @@ struct TabCell: View {
 struct PathBarView: View {
     @Environment(AppState.self) private var appState
     var tab: TabInfo
-    var pane: PaneState
-    var paneID: PaneID
     @State private var isEditing = false
     @State private var editText  = ""
     @FocusState private var editFocused: Bool
 
     var body: some View {
         HStack(spacing: 4) {
-            // 상위 폴더로
             Button {
                 let parent = tab.url.deletingLastPathComponent()
                 if parent != tab.url {
@@ -165,7 +162,6 @@ struct PathBarView: View {
                     .onSubmit { commitEdit(); isEditing = false }
                     .onKeyPress(.escape) { isEditing = false; return .handled }
             } else {
-                // 경로 브레드크럼
                 ScrollViewReader { proxy in
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 0) {
@@ -207,61 +203,12 @@ struct PathBarView: View {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { editFocused = true }
                 }
 
-                // ── 툴바 버튼 ──────────────────────────────────────
-                Divider().frame(height: 12).padding(.horizontal, 2)
-
-                // 파일 작업
-                pBtn("doc.on.doc",                   "반대 패널로 복사 (F3)")   { activate(); appState.copySelectionToOpposite() }
-                pBtn("arrow.right.doc.on.clipboard", "반대 패널로 이동 (F4)")   { activate(); appState.moveSelectionToOpposite() }
-                pBtn("folder.badge.plus",            "새 폴더 (F7)") { activate(); appState.newFolderName = ""; appState.showNewFolder = true }
-                pBtn("trash",                        "삭제 (F8)")    { activate(); appState.deleteSelection() }
-
-                Divider().frame(height: 12).padding(.horizontal, 2)
-
-                // 유틸리티
-                pBtn("network",               "SFTP 연결 (F9)")         { appState.showFTP = true }
-                pBtn("bookmark",              "즐겨찾기 (⌘D)")           { appState.showBookmarks = true }
-                pBtn("arrow.left.arrow.right","파일 비교 (F11)")         { activate(); appState.openDiff() }
-                pBtn("terminal",              "커맨드 바 (F12)")         { appState.showCommandBar.toggle() }
-
-                Divider().frame(height: 12).padding(.horizontal, 2)
-
-                // 숨김 토글
-                Button {
-                    appState.showHidden.toggle()
-                    Task {
-                        await appState.reload(pane: appState.leftPane)
-                        await appState.reload(pane: appState.rightPane)
-                    }
-                } label: {
-                    Image(systemName: appState.showHidden ? "eye" : "eye.slash")
-                        .font(.system(size: 10))
-                        .foregroundStyle(appState.showHidden ? Color.accentColor : NX.infoText)
-                        .frame(width: 18, height: 18)
-                }
-                .buttonStyle(.borderless)
-                .help(appState.showHidden ? "숨김 파일 숨기기" : "숨김 파일 표시")
-
-                // 아이콘 뷰 토글
-                Button {
-                    appState.showIconView.toggle()
-                } label: {
-                    Image(systemName: "square.grid.2x2")
-                        .font(.system(size: 10))
-                        .foregroundStyle(appState.showIconView ? Color.accentColor : NX.infoText)
-                        .frame(width: 18, height: 18)
-                }
-                .buttonStyle(.borderless)
-                .help("아이콘 뷰 전환")
-
-                // 새로고침
                 Button {
                     Task { await appState.loadTab(tab, showHidden: appState.showHidden) }
                 } label: {
                     Image(systemName: "arrow.clockwise").font(.system(size: 10)).foregroundStyle(NX.infoText)
                 }
                 .buttonStyle(.borderless)
-                .help("새로고침")
             }
         }
         .padding(.horizontal, 6)
@@ -274,20 +221,6 @@ struct PathBarView: View {
                 isEditing = false
             }
         }
-    }
-
-    private func activate() { appState.activePaneID = paneID }
-
-    @ViewBuilder
-    private func pBtn(_ icon: String, _ tip: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: icon)
-                .font(.system(size: 10))
-                .foregroundStyle(NX.infoText)
-                .frame(width: 18, height: 18)
-        }
-        .buttonStyle(.borderless)
-        .help(tip)
     }
 
     private func commitEdit() {
@@ -321,11 +254,14 @@ struct PathBarView: View {
 struct FolderInfoBar: View {
     @Environment(AppState.self) private var appState
     var tab: TabInfo
+    var pane: PaneState
+    var paneID: PaneID
     @State private var diskFree: Int64 = 0
 
     var body: some View {
         let info = tab.folderInfo(showHidden: appState.showHidden)
         HStack(spacing: 6) {
+            // 폴더/파일 수
             Text("\(info.dirs)개 폴더")
                 .font(.system(size: 10))
                 .foregroundStyle(NX.infoText)
@@ -338,7 +274,57 @@ struct FolderInfoBar: View {
                     .font(.system(size: 10))
                     .foregroundStyle(NX.attrText)
             }
+
             Spacer()
+
+            // ── 툴바 버튼 ────────────────────────────────
+            // 파일 작업
+            iBtn("doc.on.doc",                   "반대 패널로 복사 (F3)")   { activate(); appState.copySelectionToOpposite() }
+            iBtn("arrow.right.doc.on.clipboard", "반대 패널로 이동 (F4)")   { activate(); appState.moveSelectionToOpposite() }
+            iBtn("folder.badge.plus",            "새 폴더 (F7)") { activate(); appState.newFolderName = ""; appState.showNewFolder = true }
+            iBtn("trash",                        "삭제 (F8)")    { activate(); appState.deleteSelection() }
+
+            Divider().frame(height: 10).padding(.horizontal, 1)
+
+            // 유틸리티
+            iBtn("network",                "SFTP 연결 (F9)")  { appState.showFTP = true }
+            iBtn("bookmark",               "즐겨찾기 (⌘D)")    { appState.showBookmarks = true }
+            iBtn("arrow.left.arrow.right", "파일 비교 (F11)") { activate(); appState.openDiff() }
+            iBtn("terminal",               "커맨드 바 (F12)") { appState.showCommandBar.toggle() }
+
+            Divider().frame(height: 10).padding(.horizontal, 1)
+
+            // 숨김 토글
+            Button {
+                appState.showHidden.toggle()
+                Task {
+                    await appState.reload(pane: appState.leftPane)
+                    await appState.reload(pane: appState.rightPane)
+                }
+            } label: {
+                Image(systemName: appState.showHidden ? "eye" : "eye.slash")
+                    .font(.system(size: 9))
+                    .foregroundStyle(appState.showHidden ? Color.accentColor : NX.infoText)
+                    .frame(width: 16, height: 16)
+            }
+            .buttonStyle(.borderless)
+            .help(appState.showHidden ? "숨김 파일 숨기기" : "숨김 파일 표시")
+
+            // 아이콘 뷰 토글
+            Button {
+                appState.showIconView.toggle()
+            } label: {
+                Image(systemName: "square.grid.2x2")
+                    .font(.system(size: 9))
+                    .foregroundStyle(appState.showIconView ? Color.accentColor : NX.infoText)
+                    .frame(width: 16, height: 16)
+            }
+            .buttonStyle(.borderless)
+            .help("아이콘 뷰 전환")
+
+            Divider().frame(height: 10).padding(.horizontal, 1)
+
+            // 여유 공간
             if diskFree > 0 {
                 Text("여유 \(fmtSize(diskFree))")
                     .font(.system(size: 10))
@@ -356,6 +342,20 @@ struct FolderInfoBar: View {
             let attrs = (try? FileManager.default.attributesOfFileSystem(forPath: path)) ?? [:]
             diskFree = (attrs[.systemFreeSize] as? Int64) ?? 0
         }
+    }
+
+    private func activate() { appState.activePaneID = paneID }
+
+    @ViewBuilder
+    private func iBtn(_ icon: String, _ tip: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.system(size: 9))
+                .foregroundStyle(NX.infoText)
+                .frame(width: 16, height: 16)
+        }
+        .buttonStyle(.borderless)
+        .help(tip)
     }
 
     private func fmtSize(_ b: Int64) -> String {
