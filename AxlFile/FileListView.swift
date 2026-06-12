@@ -263,6 +263,21 @@ struct FileListView: View {
         case _ where press.modifiers.contains(.command) && press.characters == "a":
             tab.selectedIDs = Set(files.map { $0.id })
             return .handled
+        case _ where press.modifiers.contains(.command) && press.characters == "c":
+            if !tab.isSFTP {
+                let items = tab.effectiveSelections.filter { !$0.isParentDir }
+                if !items.isEmpty { appState.setClipboard(urls: items.map { $0.url }, op: .copy) }
+            }
+            return .handled
+        case _ where press.modifiers.contains(.command) && press.characters == "x":
+            if !tab.isSFTP {
+                let items = tab.effectiveSelections.filter { !$0.isParentDir }
+                if !items.isEmpty { appState.setClipboard(urls: items.map { $0.url }, op: .move) }
+            }
+            return .handled
+        case _ where press.modifiers.contains(.command) && press.characters == "v":
+            if !tab.isSFTP { Task { await appState.pasteFromClipboard() } }
+            return .handled
         case _ where press.modifiers.contains(.command) && press.characters == "n":
             appState.newFileName = ""
             appState.showNewFile = true
@@ -386,7 +401,7 @@ struct FileListView: View {
             tab.selectedIDs = Set(files[lo...hi].map { $0.id })
         } else {
             tab.cursorID    = item.id
-            tab.selectedIDs = [item.id]
+            tab.selectedIDs = []
             anchorID        = nil
         }
     }
@@ -581,23 +596,21 @@ struct FileListView: View {
 
             // 클립보드 (로컬 전용)
             Button {
-                appState.clipboard    = items.map { $0.url }
-                appState.clipboardOp  = .copy
+                appState.setClipboard(urls: items.map { $0.url }, op: .copy)
             } label: {
-                Label("복사", systemImage: "doc.on.doc")
+                Label("복사 (⌘C)", systemImage: "doc.on.doc")
             }
 
             Button {
-                appState.clipboard    = items.map { $0.url }
-                appState.clipboardOp  = .move
+                appState.setClipboard(urls: items.map { $0.url }, op: .move)
             } label: {
-                Label("잘라내기", systemImage: "scissors")
+                Label("잘라내기 (⌘X)", systemImage: "scissors")
             }
 
             Button {
-                Task { await appState.performPaste() }
+                Task { await appState.pasteFromClipboard() }
             } label: {
-                Label("붙여넣기", systemImage: "doc.on.clipboard")
+                Label("붙여넣기 (⌘V)", systemImage: "doc.on.clipboard")
             }
             .disabled(appState.clipboard.isEmpty)
         }
@@ -882,11 +895,16 @@ final class FinderIconCache {
 // MARK: - File Row
 
 struct FileRowView: View {
+    @Environment(AppState.self) private var appState
     var item: FileItem
     var rowIndex: Int
     var isSelected: Bool
     var isCursor: Bool
     var isActive: Bool
+
+    private var isCut: Bool {
+        appState.clipboardOp == .move && appState.clipboard.contains(item.url)
+    }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -935,7 +953,7 @@ struct FileRowView: View {
         }
         .frame(height: 20)
         .background(rowBg)
-        .opacity(item.isHidden ? 0.50 : 1.0)
+        .opacity(item.isHidden ? 0.50 : isCut ? 0.40 : 1.0)
     }
 
     private var nameTint: Color {
@@ -964,10 +982,15 @@ struct FileRowView: View {
 // MARK: - File Grid Cell (다열 모드용 컴팩트 셀)
 
 struct FileGridCellView: View {
+    @Environment(AppState.self) private var appState
     var item: FileItem
     var isSelected: Bool
     var isCursor: Bool
     var isActive: Bool
+
+    private var isCut: Bool {
+        appState.clipboardOp == .move && appState.clipboard.contains(item.url)
+    }
 
     var body: some View {
         HStack(spacing: 3) {
@@ -983,7 +1006,7 @@ struct FileGridCellView: View {
         .frame(height: 20)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(cellBg)
-        .opacity(item.isHidden ? 0.5 : 1.0)
+        .opacity(item.isHidden ? 0.5 : isCut ? 0.40 : 1.0)
     }
 
     private var nameTint: Color {
@@ -1004,10 +1027,15 @@ struct FileGridCellView: View {
 // MARK: - File Icon Cell (아이콘 뷰 모드)
 
 struct FileIconCellView: View {
+    @Environment(AppState.self) private var appState
     var item: FileItem
     var isSelected: Bool
     var isCursor: Bool
     var isActive: Bool
+
+    private var isCut: Bool {
+        appState.clipboardOp == .move && appState.clipboard.contains(item.url)
+    }
 
     var body: some View {
         VStack(spacing: 5) {
@@ -1024,7 +1052,7 @@ struct FileIconCellView: View {
         .padding(.horizontal, 4)
         .background(cellBg)
         .clipShape(RoundedRectangle(cornerRadius: 6))
-        .opacity(item.isHidden ? 0.5 : 1.0)
+        .opacity(item.isHidden ? 0.5 : isCut ? 0.40 : 1.0)
     }
 
     private var nameTint: Color {
@@ -1121,6 +1149,12 @@ final class MultiFileDragNSView: NSView, NSDraggingSource {
         } else {
             onTap?()
         }
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        // 우클릭 시 이 오버레이를 투명하게 처리 → 하위 SwiftUI 뷰가 .contextMenu를 받도록
+        if NSApp.currentEvent?.type == .rightMouseDown { return nil }
+        return super.hitTest(point)
     }
 
     override func otherMouseDown(with event: NSEvent) {

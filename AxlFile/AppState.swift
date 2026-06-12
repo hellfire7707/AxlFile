@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import AppKit
 
 enum ClipboardOp { case copy, move }
 
@@ -36,6 +37,7 @@ class AppState {
     // 클립보드
     var clipboard: [URL] = []
     var clipboardOp: ClipboardOp = .copy
+    private var lastPasteboardChangeCount: Int = -1
 
     // 작업 진행
     var isWorking       = false
@@ -462,6 +464,32 @@ class AppState {
                 }
             }
         }
+    }
+
+    // MARK: - 클립보드 (Cmd+C/X/V)
+
+    func setClipboard(urls: [URL], op: ClipboardOp) {
+        clipboard = urls
+        clipboardOp = op
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.writeObjects(urls as [NSURL])
+        lastPasteboardChangeCount = pb.changeCount
+    }
+
+    // Finder에서 복사한 파일도 붙여넣기 가능 (시스템 클립보드 변경 감지)
+    func pasteFromClipboard() async {
+        let pb = NSPasteboard.general
+        if pb.changeCount != lastPasteboardChangeCount,
+           let objs = pb.readObjects(forClasses: [NSURL.self]) as? [URL] {
+            let fileURLs = objs.filter { $0.isFileURL }
+            if !fileURLs.isEmpty {
+                clipboard = fileURLs
+                clipboardOp = .copy
+                lastPasteboardChangeCount = pb.changeCount
+            }
+        }
+        await performPaste()
     }
 
     func performPaste(destinationURL: URL? = nil, targetPane: PaneState? = nil) async {
