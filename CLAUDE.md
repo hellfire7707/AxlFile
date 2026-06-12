@@ -12,10 +12,50 @@ sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
 xcodebuild -project AxlFile.xcodeproj -scheme AxlFile -configuration Release \
   -archivePath build/AxlFile.xcarchive archive CODE_SIGN_IDENTITY="-"
 
-# DMG 생성
+# DMG 생성 (배경 이미지 + 드래그-to-Applications 설치 방식)
 APP=$(find build/AxlFile.xcarchive -name "AxlFile.app" -type d | head -1)
-mkdir -p build/dmg_tmp && cp -R "$APP" build/dmg_tmp/
-hdiutil create -volname "AxlFile" -srcfolder build/dmg_tmp -ov -format UDZO build/AxlFile.dmg
+
+# 배경 이미지 생성 (Swift)
+swift /tmp/make_dmg_bg.swift   # /tmp/dmg_background.png 생성
+
+# 스테이징 구성
+rm -rf build/dmg_staging && mkdir -p build/dmg_staging/.background
+cp /tmp/dmg_background.png build/dmg_staging/.background/background.png
+cp -R "$APP" build/dmg_staging/
+ln -s /Applications build/dmg_staging/Applications
+
+# 읽기-쓰기 DMG 생성 후 마운트
+hdiutil create -volname "AxlFile" -srcfolder build/dmg_staging -ov -format UDRW -size 200m build/AxlFile_rw.dmg
+MOUNT=$(hdiutil attach build/AxlFile_rw.dmg -readwrite -noverify -noautoopen 2>&1 | awk '/\/Volumes/ {print $NF}')
+
+# Finder 윈도우 레이아웃 (배경, 아이콘 위치)
+osascript << 'APPLESCRIPT'
+tell application "Finder"
+    tell disk "AxlFile"
+        open
+        set current view of container window to icon view
+        set toolbar visible of container window to false
+        set statusbar visible of container window to false
+        set bounds of container window to {400, 100, 940, 460}
+        set theViewOptions to icon view options of container window
+        set arrangement of theViewOptions to not arranged
+        set icon size of theViewOptions to 96
+        set background picture of theViewOptions to file ".background:background.png"
+        set position of item "AxlFile.app" to {150, 185}
+        set position of item "Applications" to {390, 185}
+        close
+        open
+        update without registering applications
+        delay 2
+        close
+    end tell
+end tell
+APPLESCRIPT
+
+chmod -Rf go-w "$MOUNT"
+hdiutil detach "$MOUNT" -force
+hdiutil convert build/AxlFile_rw.dmg -format UDZO -o build/AxlFile.dmg -ov
+rm -f build/AxlFile_rw.dmg && rm -rf build/dmg_staging
 ```
 
 테스트 타겟 없음. Xcode에서 Cmd+R로 Debug 빌드 실행.

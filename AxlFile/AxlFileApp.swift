@@ -55,5 +55,9 @@ struct AxlFileApp: App {
                 .keyboardShortcut("r", modifiers: .command)
             }
         }
+
+        Settings {
+            SettingsView()
+        }
     }
 }

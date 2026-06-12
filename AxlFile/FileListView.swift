@@ -21,15 +21,18 @@ struct FileListView: View {
     // 퀵서치
     @State private var quickSearch = ""
 
+    @AppStorage("col1Threshold") private var col1Threshold = 50
+    @AppStorage("col2Threshold") private var col2Threshold = 150
+    @AppStorage("col3Threshold") private var col3Threshold = 300
+
     private var files: [FileItem] { tab.displayFiles(showHidden: appState.showHidden) }
 
     private var columnCount: Int {
-        switch files.count {
-        case 0...50:    return 1
-        case 51...150:  return 2
-        case 151...300: return 3
-        default:        return 4
-        }
+        let n = files.count
+        if n <= col1Threshold  { return 1 }
+        if n <= col2Threshold  { return 2 }
+        if n <= col3Threshold  { return 3 }
+        return 4
     }
 
     var body: some View {

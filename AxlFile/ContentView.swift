@@ -57,6 +57,17 @@ struct ContentView: View {
         .overlay {
             if appState.isWorking { WorkingOverlay().environment(appState) }
         }
+        .overlay {
+            if let conflict = appState.overwriteConflict {
+                ZStack {
+                    Color.black.opacity(0.55).ignoresSafeArea()
+                    OverwriteConflictDialog(conflict: conflict) { action in
+                        appState.overwriteConflict = nil
+                        conflict.resolve(action)
+                    }
+                }
+            }
+        }
         .sheet(isPresented: Binding(
             get: { appState.showDeleteConfirm },
             set: { appState.showDeleteConfirm = $0 }

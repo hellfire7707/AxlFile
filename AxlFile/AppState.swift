@@ -79,10 +79,34 @@ class AppState {
     var showZipName = false
     var zipNameText = ""
 
+    // MARK: - 덮어쓰기 충돌 다이얼로그
+    var overwriteConflict: OverwriteConflict?
+
     init() {
         let home = FileManager.default.homeDirectoryForCurrentUser
-        leftPane  = PaneState(url: home)
-        rightPane = PaneState(url: home)
+        let ud   = UserDefaults.standard
+
+        // 환경설정 - 시작 폴더
+        let startURL: URL
+        if ud.string(forKey: "startupFolder") == "last",
+           let lastPath = ud.string(forKey: "lastOpenedPath") {
+            let candidate = URL(fileURLWithPath: lastPath)
+            var isDir: ObjCBool = false
+            if FileManager.default.fileExists(atPath: lastPath, isDirectory: &isDir), isDir.boolValue {
+                startURL = candidate
+            } else {
+                startURL = home
+            }
+        } else {
+            startURL = home
+        }
+
+        leftPane  = PaneState(url: startURL)
+        rightPane = PaneState(url: startURL)
+
+        // 환경설정 - 숨김 파일 기본 표시
+        showHidden = ud.bool(forKey: "showHiddenDefault")
+
         loadBookmarks()
     }
 
@@ -193,6 +217,9 @@ class AppState {
         }
         tab.url = url
         tab.selectedIDs = []
+        if url.scheme != "sftp" {
+            UserDefaults.standard.set(url.path, forKey: "lastOpenedPath")
+        }
         Task { await loadTab(tab, showHidden: showHidden, selectingName: selectingName) }
     }
 
@@ -228,6 +255,48 @@ class AppState {
         let items = srcTab.effectiveSelections
         guard !items.isEmpty else { return }
         performTransfer(items: items, srcTab: srcTab, dstTab: dstTab, move: true)
+    }
+
+    // MARK: - 충돌 resolver 생성
+
+    // 연속 작업 중 "모두 XXX" 선택을 기억하는 값을 공유하기 위한 참조 타입
+    private final class ConflictState: @unchecked Sendable {
+        var remembered: OverwriteAction? = nil
+    }
+
+    private func makeConflictResolver(state: ConflictState) -> FileOperationManager.ConflictResolver {
+        { [weak self] srcURL, dstURL in
+            guard let self else { return .skip }
+
+            // 이미 기억된 "모두" 선택 적용
+            if let remembered = state.remembered {
+                switch remembered {
+                case .skipAll:      return .skip
+                case .renameAll:    return .rename
+                case .overwriteAll: return .overwrite
+                default: break
+                }
+            }
+
+            // 환경설정: rename이면 자동 이름 변경
+            let policy = UserDefaults.standard.string(forKey: "overwritePolicy") ?? "rename"
+            if policy == "rename" { return .rename }
+
+            // confirm: 다이얼로그 표시 후 대기
+            let action = await withCheckedContinuation { (cont: CheckedContinuation<OverwriteAction, Never>) in
+                Task { @MainActor [weak self] in
+                    guard let self else { cont.resume(returning: .skip); return }
+                    self.overwriteConflict = OverwriteConflict(srcURL: srcURL, dstURL: dstURL, continuation: cont)
+                }
+            }
+
+            // "모두" 액션 기억
+            switch action {
+            case .skipAll, .renameAll, .overwriteAll: state.remembered = action
+            default: break
+            }
+            return action
+        }
     }
 
     private func resetWorkState(message: String) {
@@ -321,10 +390,12 @@ class AppState {
                     // 로컬 → 로컬
                     let mgr = FileOperationManager()
                     currentOperationMgr = mgr
+                    let resolver = makeConflictResolver(state: ConflictState())
                     try await mgr.perform(
                         op: move ? .move : .copy,
                         items: items.map { $0.url },
                         destination: dstTab.url,
+                        conflictResolver: resolver,
                         onTotal: { [weak self] t in self?.workTotalCount = t },
                         onFile: { [weak self] name, src, dst, size in
                             self?.workCurrentFile = name
@@ -508,8 +579,10 @@ class AppState {
         do {
             let mgr = FileOperationManager()
             currentOperationMgr = mgr
+            let resolver = makeConflictResolver(state: ConflictState())
             try await mgr.perform(
                 op: op, items: items, destination: dst,
+                conflictResolver: resolver,
                 onTotal: { [weak self] t in self?.workTotalCount = t },
                 onFile: { [weak self] name, src, dstPath, size in
                     self?.workCurrentFile = name
@@ -535,13 +608,18 @@ class AppState {
         }
     }
 
-    // 삭제 요청 — 확인 다이얼로그 표시
+    // 삭제 요청 — 환경설정에 따라 확인 다이얼로그 또는 즉시 삭제
     func deleteSelection() {
         guard let tab = activePane.activeTab else { return }
         let items = tab.effectiveSelections
         guard !items.isEmpty else { return }
         deleteTargets = items
-        showDeleteConfirm = true
+        if UserDefaults.standard.object(forKey: "confirmBeforeDelete") == nil
+            || UserDefaults.standard.bool(forKey: "confirmBeforeDelete") {
+            showDeleteConfirm = true
+        } else {
+            confirmDelete()
+        }
     }
 
     // 확인 후 실제 삭제 실행
