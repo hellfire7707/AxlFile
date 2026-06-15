@@ -1,6 +1,33 @@
 import SwiftUI
 import AppKit
 
+// MARK: - Settings Window Controller
+
+private final class SettingsWindowController: NSObject, NSWindowDelegate {
+    static let shared = SettingsWindowController()
+    private var window: NSWindow?
+
+    func open(appState: AppState) {
+        if let w = window, w.isVisible { w.makeKeyAndOrderFront(nil); return }
+        let w = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 540, height: 450),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        w.title = "환경설정"
+        w.contentView = NSHostingView(rootView: SettingsView().environment(appState))
+        w.delegate = self
+        w.center()
+        w.makeKeyAndOrderFront(nil)
+        window = w
+    }
+
+    func windowWillClose(_ notification: Notification) { window = nil }
+}
+
+// MARK: - App
+
 @main
 struct AxlFileApp: App {
     @State private var appState = AppState()
@@ -12,6 +39,10 @@ struct AxlFileApp: App {
         }
         .defaultSize(width: 1100, height: 660)
         .commands {
+            CommandGroup(replacing: .appSettings) {
+                Button("환경설정...") { SettingsWindowController.shared.open(appState: appState) }
+                    .keyboardShortcut(",", modifiers: .command)
+            }
             CommandGroup(replacing: .appInfo) {
                 Button("AxlFile 정보...") {
                     let credits = NSMutableAttributedString(
@@ -39,11 +70,8 @@ struct AxlFileApp: App {
             }
             CommandMenu("보기") {
                 Button("숨김 파일 표시/숨기기") {
-                    appState.showHidden.toggle()
-                    Task {
-                        await appState.reload(pane: appState.leftPane)
-                        await appState.reload(pane: appState.rightPane)
-                    }
+                    appState.activePane.showHidden.toggle()
+                    Task { await appState.reload(pane: appState.activePane) }
                 }
                 .keyboardShortcut(".", modifiers: .command)
                 Button("새로고침") {
@@ -56,8 +84,5 @@ struct AxlFileApp: App {
             }
         }
 
-        Settings {
-            SettingsView()
-        }
     }
 }

@@ -10,7 +10,6 @@ class AppState {
     var rightPane: PaneState
     var activePaneID: PaneID = .left
 
-    var showHidden   = false
     var showIconView = false
 
     // 뷰어
@@ -104,9 +103,6 @@ class AppState {
         leftPane  = PaneState(url: startURL)
         rightPane = PaneState(url: startURL)
 
-        // 환경설정 - 숨김 파일 기본 표시
-        showHidden = ud.bool(forKey: "showHiddenDefault")
-
         loadBookmarks()
     }
 
@@ -115,15 +111,17 @@ class AppState {
 
     func switchActivePane() { activePaneID = activePaneID == .left ? .right : .left }
 
+    func pane(containing tab: TabInfo) -> PaneState {
+        leftPane.tabs.contains(where: { $0.id == tab.id }) ? leftPane : rightPane
+    }
+
     // MARK: - SFTP 탭 열기
 
     func openSFTPTab(client: SFTPClient) {
         let url = sftpURL(client: client, path: client.currentPath)
         activePane.addTab(url: url, sftpClient: client)
         Task {
-            if let tab = activePane.activeTab {
-                await loadTab(tab, showHidden: showHidden)
-            }
+            if let tab = activePane.activeTab { await loadTab(tab) }
         }
     }
 
@@ -137,13 +135,14 @@ class AppState {
             pane.addTab(url: cur.url)
         }
         Task {
-            if let t = pane.activeTab { await loadTab(t, showHidden: showHidden) }
+            if let t = pane.activeTab { await loadTab(t) }
         }
     }
 
     // MARK: - 디렉토리 로드
 
-    func loadTab(_ tab: TabInfo, showHidden: Bool, selectingName: String? = nil) async {
+    func loadTab(_ tab: TabInfo, selectingName: String? = nil) async {
+        let showHidden = pane(containing: tab).showHidden
         if let client = tab.sftpClient {
             await loadSFTPTab(tab, client: client)
             return
@@ -197,7 +196,7 @@ class AppState {
                 )
             }
             if tab.cursorID == nil || !tab.files.contains(where: { $0.id == tab.cursorID }) {
-                tab.cursorID = tab.displayFiles(showHidden: showHidden).first?.id
+                tab.cursorID = tab.displayFiles(showHidden: pane(containing: tab).showHidden).first?.id
             }
         case .failure(let error):
             tab.files = []
@@ -207,7 +206,7 @@ class AppState {
 
     func reload(pane: PaneState) async {
         guard let tab = pane.activeTab else { return }
-        await loadTab(tab, showHidden: showHidden)
+        await loadTab(tab)
     }
 
     func navigate(tab: TabInfo, to url: URL, selectingName: String? = nil) {
@@ -220,7 +219,7 @@ class AppState {
         if url.scheme != "sftp" {
             UserDefaults.standard.set(url.path, forKey: "lastOpenedPath")
         }
-        Task { await loadTab(tab, showHidden: showHidden, selectingName: selectingName) }
+        Task { await loadTab(tab, selectingName: selectingName) }
     }
 
     func navigateBack(tab: TabInfo) {
@@ -228,7 +227,7 @@ class AppState {
         tab.historyForward.append(tab.url)
         tab.url = prev
         tab.selectedIDs = []
-        Task { await loadTab(tab, showHidden: showHidden) }
+        Task { await loadTab(tab) }
     }
 
     func navigateForward(tab: TabInfo) {
@@ -236,22 +235,26 @@ class AppState {
         tab.historyBack.append(tab.url)
         tab.url = next
         tab.selectedIDs = []
-        Task { await loadTab(tab, showHidden: showHidden) }
+        Task { await loadTab(tab) }
     }
 
     // MARK: - 파일 작업 (로컬/SFTP 분기)
 
-    func copySelectionToOpposite() {
-        guard let srcTab = activePane.activeTab,
-              let dstTab = oppositePane.activeTab else { return }
+    func copySelectionToOpposite(from srcPane: PaneState? = nil) {
+        let src = srcPane ?? activePane
+        let dst = src === leftPane ? rightPane : leftPane
+        guard let srcTab = src.activeTab,
+              let dstTab = dst.activeTab else { return }
         let items = srcTab.effectiveSelections
         guard !items.isEmpty else { return }
         performTransfer(items: items, srcTab: srcTab, dstTab: dstTab, move: false)
     }
 
-    func moveSelectionToOpposite() {
-        guard let srcTab = activePane.activeTab,
-              let dstTab = oppositePane.activeTab else { return }
+    func moveSelectionToOpposite(from srcPane: PaneState? = nil) {
+        let src = srcPane ?? activePane
+        let dst = src === leftPane ? rightPane : leftPane
+        guard let srcTab = src.activeTab,
+              let dstTab = dst.activeTab else { return }
         let items = srcTab.effectiveSelections
         guard !items.isEmpty else { return }
         performTransfer(items: items, srcTab: srcTab, dstTab: dstTab, move: true)
@@ -609,8 +612,9 @@ class AppState {
     }
 
     // 삭제 요청 — 환경설정에 따라 확인 다이얼로그 또는 즉시 삭제
-    func deleteSelection() {
-        guard let tab = activePane.activeTab else { return }
+    func deleteSelection(in srcPane: PaneState? = nil) {
+        let pane = srcPane ?? activePane
+        guard let tab = pane.activeTab else { return }
         let items = tab.effectiveSelections
         guard !items.isEmpty else { return }
         deleteTargets = items
@@ -797,6 +801,7 @@ class AppState {
     // MARK: - 즐겨찾기
 
     func addBookmark(url: URL, name: String? = nil) {
+        guard !bookmarks.contains(where: { $0.path == url.path }) else { return }
         let bm = Bookmark(name: name ?? url.lastPathComponent, path: url.path)
         bookmarks.append(bm)
         saveBookmarks()
@@ -840,7 +845,7 @@ class AppState {
             let output = await runShellCommand(cmd, cwd: cwd)
             commandOutput = output
             commandIsRunning = false
-            if let tab = activePane.activeTab { await loadTab(tab, showHidden: showHidden) }
+            if let tab = activePane.activeTab { await loadTab(tab) }
         }
     }
 

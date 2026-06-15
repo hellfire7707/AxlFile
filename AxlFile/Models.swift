@@ -223,7 +223,7 @@ class TabInfo: Identifiable {
             return sortAscending ? asc : !asc
         }
         let parent = url.deletingLastPathComponent()
-        if parent != url {
+        if url.path != "/" && parent.path != url.path {
             items.insert(.parentDirItem(id: parentDirID, parentURL: parent), at: 0)
         }
         return items
@@ -233,7 +233,7 @@ class TabInfo: Identifiable {
         guard let id = cursorID else { return nil }
         if id == parentDirID {
             let parent = url.deletingLastPathComponent()
-            return parent != url ? .parentDirItem(id: parentDirID, parentURL: parent) : nil
+            return (url.path != "/" && parent.path != url.path) ? .parentDirItem(id: parentDirID, parentURL: parent) : nil
         }
         return files.first { $0.id == id }
     }
@@ -273,9 +273,11 @@ struct Bookmark: Identifiable, Codable {
 class PaneState {
     var tabs: [TabInfo] = []
     var activeIndex: Int = 0
+    var showHidden: Bool
 
     init(url: URL) {
         tabs = [TabInfo(url: url)]
+        showHidden = UserDefaults.standard.bool(forKey: "showHiddenDefault")
     }
 
     var activeTab: TabInfo? {

@@ -25,7 +25,8 @@ struct FileListView: View {
     @AppStorage("col2Threshold") private var col2Threshold = 150
     @AppStorage("col3Threshold") private var col3Threshold = 300
 
-    private var files: [FileItem] { tab.displayFiles(showHidden: appState.showHidden) }
+    private var showHidden: Bool { paneID == .left ? appState.leftPane.showHidden : appState.rightPane.showHidden }
+    private var files: [FileItem] { tab.displayFiles(showHidden: showHidden) }
 
     private var columnCount: Int {
         let n = files.count

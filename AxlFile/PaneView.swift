@@ -62,7 +62,7 @@ struct TabBarView: View {
                         onSelect: {
                             pane.activeIndex = idx
                             appState.activePaneID = paneID
-                            Task { await appState.loadTab(tab, showHidden: appState.showHidden) }
+                            Task { await appState.loadTab(tab) }
                         },
                         onClose: { pane.closeTab(at: idx) }
                     )
@@ -138,7 +138,21 @@ struct PathBarView: View {
     var tab: TabInfo
     @State private var isEditing = false
     @State private var editText  = ""
+    @State private var showFavorites = false
     @FocusState private var editFocused: Bool
+
+    private let fm = FileManager.default
+
+    private var favorites: [(name: String, icon: String, url: URL)] {
+        let home = fm.homeDirectoryForCurrentUser
+        return [
+            ("응용 프로그램", "app.badge",         URL(fileURLWithPath: "/Applications")),
+            ("데스크탑",     "menubar.dock.rectangle", home.appendingPathComponent("Desktop")),
+            ("문서",        "doc.fill",            home.appendingPathComponent("Documents")),
+            ("다운로드",     "arrow.down.circle.fill", home.appendingPathComponent("Downloads")),
+            ("홈",          "house.fill",          home),
+        ]
+    }
 
     var body: some View {
         HStack(spacing: 4) {
@@ -203,12 +217,30 @@ struct PathBarView: View {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { editFocused = true }
                 }
 
+                // 즐겨찾기 버튼
+                Button { showFavorites.toggle() } label: {
+                    Image(systemName: "bookmark.fill")
+                        .font(.system(size: 10))
+                        .foregroundStyle(showFavorites ? Color.accentColor : NX.infoText)
+                }
+                .buttonStyle(.borderless)
+                .help("즐겨찾기")
+                .popover(isPresented: $showFavorites, arrowEdge: .bottom) {
+                    FavoritesPopover(tab: tab, systemFavorites: favorites) { url in
+                        showFavorites = false
+                        appState.navigate(tab: tab, to: url)
+                    }
+                    .environment(appState)
+                }
+
+                // 새로고침 버튼
                 Button {
-                    Task { await appState.loadTab(tab, showHidden: appState.showHidden) }
+                    Task { await appState.loadTab(tab) }
                 } label: {
                     Image(systemName: "arrow.clockwise").font(.system(size: 10)).foregroundStyle(NX.infoText)
                 }
                 .buttonStyle(.borderless)
+                .help("새로고침")
             }
         }
         .padding(.horizontal, 6)
@@ -249,6 +281,86 @@ struct PathBarView: View {
     }
 }
 
+// MARK: - Favorites Popover
+
+struct FavoritesPopover: View {
+    @Environment(AppState.self) private var appState
+    let tab: TabInfo
+    let systemFavorites: [(name: String, icon: String, url: URL)]
+    let onSelect: (URL) -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // 시스템 즐겨찾기
+            ForEach(Array(systemFavorites.enumerated()), id: \.offset) { _, fav in
+                favRow(icon: fav.icon, iconColor: Color.accentColor, name: fav.name) {
+                    onSelect(fav.url)
+                }
+            }
+
+            // 사용자 북마크
+            if !appState.bookmarks.isEmpty {
+                Divider().overlay(NX.separator).padding(.vertical, 3)
+                ForEach(appState.bookmarks) { bm in
+                    favRow(icon: "bookmark.fill", iconColor: .yellow, name: bm.name) {
+                        onSelect(bm.url)
+                    }
+                }
+            }
+
+            // 현재 폴더 추가
+            Divider().overlay(NX.separator).padding(.vertical, 3)
+            Button {
+                let name = tab.url.lastPathComponent.isEmpty ? "/" : tab.url.lastPathComponent
+                appState.addBookmark(url: tab.url, name: name)
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "plus.circle")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.accentColor)
+                        .frame(width: 16)
+                    Text("현재 폴더 추가")
+                        .font(.system(size: 11))
+                        .foregroundStyle(NX.infoText)
+                    Spacer()
+                    Text(tab.url.lastPathComponent.isEmpty ? "/" : tab.url.lastPathComponent)
+                        .font(.system(size: 10))
+                        .foregroundStyle(NX.attrText)
+                        .lineLimit(1)
+                        .frame(maxWidth: 80, alignment: .trailing)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
+        .frame(width: 210)
+        .background(NX.headerBg)
+        .preferredColorScheme(.dark)
+    }
+
+    @ViewBuilder
+    private func favRow(icon: String, iconColor: Color, name: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Image(systemName: icon)
+                    .font(.system(size: 12))
+                    .foregroundStyle(iconColor)
+                    .frame(width: 16)
+                Text(name)
+                    .font(.system(size: 12))
+                    .foregroundStyle(NX.fileText)
+                Spacer()
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
 // MARK: - Folder Info Bar
 
 struct FolderInfoBar: View {
@@ -259,7 +371,7 @@ struct FolderInfoBar: View {
     @State private var diskFree: Int64 = 0
 
     var body: some View {
-        let info = tab.folderInfo(showHidden: appState.showHidden)
+        let info = tab.folderInfo(showHidden: pane.showHidden)
         HStack(spacing: 6) {
             // 폴더/파일 수
             Text("\(info.dirs)개 폴더")
@@ -279,10 +391,10 @@ struct FolderInfoBar: View {
 
             // ── 툴바 버튼 ────────────────────────────────
             // 파일 작업
-            iBtn("doc.on.doc",                   "반대 패널로 복사 (F3)")   { activate(); appState.copySelectionToOpposite() }
-            iBtn("arrow.right.doc.on.clipboard", "반대 패널로 이동 (F4)")   { activate(); appState.moveSelectionToOpposite() }
+            iBtn("doc.on.doc",                   "반대 패널로 복사 (F3)")   { appState.copySelectionToOpposite(from: pane) }
+            iBtn("arrow.right.doc.on.clipboard", "반대 패널로 이동 (F4)")   { appState.moveSelectionToOpposite(from: pane) }
             iBtn("folder.badge.plus",            "새 폴더 (F7)") { activate(); appState.newFolderName = ""; appState.showNewFolder = true }
-            iBtn("trash",                        "삭제 (F8)")    { activate(); appState.deleteSelection() }
+            iBtn("trash",                        "삭제 (F8)")    { appState.deleteSelection(in: pane) }
 
             Divider().frame(height: 11).padding(.horizontal, 1)
 
@@ -296,19 +408,16 @@ struct FolderInfoBar: View {
 
             // 숨김 토글
             Button {
-                appState.showHidden.toggle()
-                Task {
-                    await appState.reload(pane: appState.leftPane)
-                    await appState.reload(pane: appState.rightPane)
-                }
+                pane.showHidden.toggle()
+                Task { await appState.reload(pane: pane) }
             } label: {
-                Image(systemName: appState.showHidden ? "eye" : "eye.slash")
+                Image(systemName: pane.showHidden ? "eye" : "eye.slash")
                     .font(.system(size: 10))
-                    .foregroundStyle(appState.showHidden ? Color.accentColor : NX.infoText)
+                    .foregroundStyle(pane.showHidden ? Color.accentColor : NX.infoText)
                     .frame(width: 18, height: 18)
             }
             .buttonStyle(.borderless)
-            .help(appState.showHidden ? "숨김 파일 숨기기" : "숨김 파일 표시")
+            .help(pane.showHidden ? "숨김 파일 숨기기" : "숨김 파일 표시")
 
             // 아이콘 뷰 토글
             Button {
@@ -472,7 +581,7 @@ struct DriveRowView: View {
                         RoundedRectangle(cornerRadius: 2)
                             .fill(Color.white.opacity(0.1))
                         RoundedRectangle(cornerRadius: 2)
-                            .fill(vol.usedRatio > 0.9 ? Color.red.opacity(0.7) : Color(hex: "#3A6EA5"))
+                            .fill(vol.usedRatio > 0.9 ? Color.red.opacity(0.7) : Color.orange.opacity(0.7))
                             .frame(width: geo.size.width * vol.usedRatio)
                     }
                 }

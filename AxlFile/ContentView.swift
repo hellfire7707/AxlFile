@@ -76,10 +76,10 @@ struct ContentView: View {
         }
         .task {
             if let lt = appState.leftPane.activeTab {
-                await appState.loadTab(lt, showHidden: appState.showHidden)
+                await appState.loadTab(lt)
             }
             if let rt = appState.rightPane.activeTab {
-                await appState.loadTab(rt, showHidden: appState.showHidden)
+                await appState.loadTab(rt)
             }
         }
         .preferredColorScheme(.dark)

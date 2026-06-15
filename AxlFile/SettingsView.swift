@@ -3,6 +3,8 @@ import SwiftUI
 // MARK: - Settings Window
 
 struct SettingsView: View {
+    @Environment(AppState.self) private var appState
+
     var body: some View {
         TabView {
             GeneralSettingsTab()
@@ -11,8 +13,11 @@ struct SettingsView: View {
                 .tabItem { Label("보기", systemImage: "eye.fill") }
             EditorSettingsTab()
                 .tabItem { Label("편집기", systemImage: "pencil.and.list.clipboard") }
+            BookmarkSettingsTab()
+                .tabItem { Label("즐겨찾기", systemImage: "bookmark.fill") }
+                .environment(appState)
         }
-        .frame(width: 440, height: 300)
+        .frame(width: 540, height: 450)
         .preferredColorScheme(.dark)
     }
 }
@@ -55,7 +60,6 @@ struct GeneralSettingsTab: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 440, height: 300)
     }
 }
 
@@ -96,7 +100,6 @@ struct ViewSettingsTab: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 440, height: 300)
     }
 }
 
@@ -126,7 +129,6 @@ struct EditorSettingsTab: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 440, height: 300)
     }
 
     private func browseEditor() {
@@ -139,5 +141,117 @@ struct EditorSettingsTab: View {
         if panel.runModal() == .OK, let url = panel.url {
             externalEditor = url.path
         }
+    }
+}
+
+// MARK: - Bookmark Settings Tab
+
+struct BookmarkSettingsTab: View {
+    @Environment(AppState.self) private var appState
+    @State private var editingID: UUID? = nil
+    @State private var editText = ""
+
+    var body: some View {
+        VStack(spacing: 0) {
+            if appState.bookmarks.isEmpty {
+                VStack(spacing: 8) {
+                    Image(systemName: "bookmark.slash")
+                        .font(.system(size: 28))
+                        .foregroundStyle(.secondary)
+                    Text("즐겨찾기가 없습니다")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                    Text("경로바의 ★ 버튼으로 현재 폴더를 추가할 수 있습니다.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.tertiary)
+                        .multilineTextAlignment(.center)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                List {
+                    ForEach(appState.bookmarks) { bm in
+                        HStack(spacing: 8) {
+                            Image(systemName: "bookmark.fill")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.yellow)
+                                .frame(width: 14)
+
+                            if editingID == bm.id {
+                                TextField("이름", text: $editText)
+                                    .font(.system(size: 12))
+                                    .textFieldStyle(.roundedBorder)
+                                    .onSubmit { commitRename(id: bm.id) }
+                                    .onKeyPress(.escape) { editingID = nil; return .handled }
+                            } else {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(bm.name)
+                                        .font(.system(size: 12))
+                                        .foregroundStyle(Color.primary)
+                                    Text(bm.path)
+                                        .font(.system(size: 10))
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                }
+                                .onTapGesture(count: 2) {
+                                    editingID = bm.id
+                                    editText = bm.name
+                                }
+                            }
+
+                            Spacer()
+
+                            if editingID == bm.id {
+                                Button("완료") { commitRename(id: bm.id) }
+                                    .controlSize(.small)
+                                    .buttonStyle(.bordered)
+                            } else {
+                                Button {
+                                    editingID = bm.id
+                                    editText = bm.name
+                                } label: {
+                                    Image(systemName: "pencil")
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(.secondary)
+                                }
+                                .buttonStyle(.borderless)
+                                .help("이름 변경")
+                            }
+
+                            Button {
+                                appState.removeBookmark(id: bm.id)
+                                if editingID == bm.id { editingID = nil }
+                            } label: {
+                                Image(systemName: "trash")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(.secondary)
+                            }
+                            .buttonStyle(.borderless)
+                            .help("삭제")
+                        }
+                        .padding(.vertical, 3)
+                    }
+                }
+                .listStyle(.bordered)
+                .frame(maxHeight: .infinity)
+            }
+
+            // 하단 힌트
+            Text("이름을 더블클릭하여 수정할 수 있습니다.")
+                .font(.system(size: 10))
+                .foregroundStyle(.tertiary)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func commitRename(id: UUID) {
+        let trimmed = editText.trimmingCharacters(in: .whitespaces)
+        if !trimmed.isEmpty {
+            appState.renameBookmark(id: id, name: trimmed)
+        }
+        editingID = nil
     }
 }
