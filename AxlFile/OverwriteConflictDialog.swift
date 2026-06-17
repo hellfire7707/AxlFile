@@ -41,8 +41,8 @@ struct OverwriteConflictDialog: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
-            .background(NX.headerBg)
-            .overlay(alignment: .bottom) { Rectangle().frame(height: 1).foregroundStyle(NX.separator) }
+            .background(Color(hex: "#404040"))
+            .overlay(alignment: .bottom) { Rectangle().frame(height: 1).foregroundStyle(Color(hex: "#555555")) }
 
             // 파일명 요약
             Text("\"\(conflict.dstURL.lastPathComponent)\" 이(가) 대상 폴더에 이미 존재합니다")
@@ -68,8 +68,9 @@ struct OverwriteConflictDialog: View {
                 .padding(.vertical, 10)
         }
         .frame(width: 500)
-        .background(NX.bg)
-        .overlay { Rectangle().strokeBorder(NX.separator, lineWidth: 1) }
+        .background(Color(hex: "#323232"))
+        .overlay { Rectangle().strokeBorder(Color(hex: "#555555"), lineWidth: 1) }
+        .shadow(color: .black.opacity(0.8), radius: 20, x: 0, y: 8)
     }
 
     // MARK: - Comparison Table
