@@ -400,14 +400,20 @@ class AppState {
                         items: items.map { $0.url },
                         destination: dstTab.url,
                         conflictResolver: resolver,
-                        onTotal: { [weak self] t in self?.work?.totalCount = t },
+                        onTotal: { [weak self] t in
+                            guard let self, var w = self.work else { return }
+                            w.totalCount = t; self.work = w
+                        },
                         onFile: { [weak self] name, src, dst, size in
                             guard let self, var w = self.work else { return }
                             w.currentFile = name; w.sourcePath = src
                             w.destPath    = dst;  w.bytes     += size; w.fileCount += 1
                             self.work = w
                         },
-                        progress: { [weak self] p in self?.work?.progress = p }
+                        progress: { [weak self] p in
+                            guard let self, var w = self.work else { return }
+                            w.progress = p; self.work = w
+                        }
                     )
                 } else if !srcIsSFTP, let dstClient = dstTab.sftpClient {
                     // 로컬 → SFTP (업로드): 파일 단위 재귀 전송
@@ -577,14 +583,20 @@ class AppState {
             try await mgr.perform(
                 op: op, items: items, destination: dst,
                 conflictResolver: resolver,
-                onTotal: { [weak self] t in self?.work?.totalCount = t },
+                onTotal: { [weak self] t in
+                    guard let self, var w = self.work else { return }
+                    w.totalCount = t; self.work = w
+                },
                 onFile: { [weak self] name, src, dstPath, size in
                     guard let self, var w = self.work else { return }
                     w.currentFile = name; w.sourcePath = src
                     w.destPath    = dstPath; w.bytes  += size; w.fileCount += 1
                     self.work = w
                 },
-                progress: { [weak self] p in self?.work?.progress = p }
+                progress: { [weak self] p in
+                    guard let self, var w = self.work else { return }
+                    w.progress = p; self.work = w
+                }
             )
             await reload(pane: destPane)
             if op == .move { clipboard = []; await reload(pane: activePane) }
@@ -668,7 +680,10 @@ class AppState {
                         w.currentFile = name; w.sourcePath = src; w.bytes += size; w.fileCount += 1
                         self.work = w
                     },
-                    progress: { [weak self] p in self?.work?.progress = p }
+                    progress: { [weak self] p in
+                        guard let self, var w = self.work else { return }
+                        w.progress = p; self.work = w
+                    }
                 )
                 await reload(pane: activePane)
                 activePane.activeTab?.selectedIDs = []

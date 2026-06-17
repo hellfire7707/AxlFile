@@ -253,31 +253,32 @@ extension NumberFormatter {
 // MARK: - Work Progress Panel  (Nexus File 스타일)
 
 struct WorkingOverlay: View {
-    @Environment(AppState.self) private var appState
-
     var body: some View {
         ZStack {
             Color.black.opacity(0.6).ignoresSafeArea()
-            if let work = appState.work {
-                WorkProgressPanel(work: work, onCancel: { appState.cancelWork() })
-            }
+            WorkProgressPanel()
         }
     }
 }
 
 struct WorkProgressPanel: View {
-    let work: WorkState
-    let onCancel: () -> Void
+    @Environment(AppState.self) private var appState
 
     var body: some View {
+        if let work = appState.work {
+            panel(work: work)
+        }
+    }
+
+    @ViewBuilder
+    private func panel(work: WorkState) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            // 제목 바
             HStack {
                 Text(work.message)
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(NX.fileText)
                 Spacer()
-                Button { onCancel() } label: {
+                Button { appState.cancelWork() } label: {
                     Image(systemName: "xmark")
                         .font(.system(size: 10, weight: .bold))
                         .foregroundStyle(NX.infoText)
@@ -290,16 +291,13 @@ struct WorkProgressPanel: View {
             .overlay(alignment: .bottom) { Rectangle().frame(height: 1).foregroundStyle(NX.separator) }
 
             VStack(alignment: .leading, spacing: 5) {
-                // 소스 경로
                 pathLine(work.sourcePath)
-                // 목적지 경로
                 if !work.destPath.isEmpty {
                     pathLine(work.destPath)
                 }
 
                 Spacer().frame(height: 2)
 
-                // 현재 파일명
                 Text(work.currentFile.isEmpty ? " " : work.currentFile)
                     .font(.system(size: 11))
                     .foregroundStyle(NX.infoText)
@@ -307,11 +305,10 @@ struct WorkProgressPanel: View {
                     .truncationMode(.middle)
                     .frame(maxWidth: .infinity, alignment: .leading)
 
-                // 프로그레스 바
                 ProgressView(value: max(0.001, work.progress))
                     .tint(Color(hex: "#3DB06B"))
+                    .animation(.linear(duration: 0.1), value: work.progress)
 
-                // 하단: 크기 + 파일수 + 취소 버튼
                 HStack(spacing: 8) {
                     Text(fmtBytes(work.bytes))
                         .font(.system(size: 11, design: .monospaced))
@@ -322,7 +319,7 @@ struct WorkProgressPanel: View {
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundStyle(NX.infoText)
                     Spacer()
-                    Button("취소(C)") { onCancel() }
+                    Button("취소(C)") { appState.cancelWork() }
                         .controlSize(.small)
                         .keyboardShortcut("c", modifiers: [])
                 }
