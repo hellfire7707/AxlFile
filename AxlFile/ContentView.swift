@@ -303,7 +303,7 @@ struct WorkProgressPanel: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
 
                 ProgressView(value: max(0.001, work.progress))
-                    .tint(Color(hex: "#3DB06B"))
+                    .tint(Color(hex: "#E8820A"))
                     .animation(.linear(duration: 0.1), value: work.progress)
 
                 HStack(spacing: 8) {
