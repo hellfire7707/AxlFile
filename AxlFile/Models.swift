@@ -178,6 +178,7 @@ struct FileItem: Identifiable, Hashable {
 
 // MARK: - TabInfo
 
+@MainActor
 @Observable
 class TabInfo: Identifiable {
     let id = UUID()
@@ -269,6 +270,7 @@ struct Bookmark: Identifiable, Codable {
 
 // MARK: - PaneState
 
+@MainActor
 @Observable
 class PaneState {
     var tabs: [TabInfo] = []

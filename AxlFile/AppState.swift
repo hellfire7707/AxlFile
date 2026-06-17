@@ -4,6 +4,7 @@ import AppKit
 
 enum ClipboardOp { case copy, move }
 
+@MainActor
 @Observable
 class AppState {
     var leftPane: PaneState
@@ -343,7 +344,7 @@ class AppState {
 
     // SFTP 경로를 재귀적으로 수집 (다운로드용)
     // 결과: [(remotePath, localURL, isDir, size)]
-    private func collectSFTPForDownload(client: SFTPClient, remotePath: String,
+    nonisolated private func collectSFTPForDownload(client: SFTPClient, remotePath: String,
                                         localURL: URL, isDir: Bool, size: Int64,
                                         into list: inout [(String, URL, Bool, Int64)]) throws {
         list.append((remotePath, localURL, isDir, size))
@@ -373,7 +374,7 @@ class AppState {
 
     func cancelWork() {
         workCancelled = true
-        currentOperationMgr?.cancel()
+        Task { await currentOperationMgr?.cancel() }
     }
 
     private func performTransfer(items: [FileItem], srcTab: TabInfo, dstTab: TabInfo, move: Bool) {

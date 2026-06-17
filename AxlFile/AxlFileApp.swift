@@ -3,6 +3,7 @@ import AppKit
 
 // MARK: - Settings Window Controller
 
+@MainActor
 private final class SettingsWindowController: NSObject, NSWindowDelegate {
     static let shared = SettingsWindowController()
     private var window: NSWindow?
@@ -23,7 +24,9 @@ private final class SettingsWindowController: NSObject, NSWindowDelegate {
         window = w
     }
 
-    func windowWillClose(_ notification: Notification) { window = nil }
+    nonisolated func windowWillClose(_ notification: Notification) {
+        Task { @MainActor in self.window = nil }
+    }
 }
 
 // MARK: - App
