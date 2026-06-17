@@ -254,10 +254,7 @@ extension NumberFormatter {
 
 struct WorkingOverlay: View {
     var body: some View {
-        ZStack {
-            Color.black.opacity(0.6).ignoresSafeArea()
-            WorkProgressPanel()
-        }
+        WorkProgressPanel()
     }
 }
 
@@ -287,8 +284,8 @@ struct WorkProgressPanel: View {
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 7)
-            .background(NX.headerBg)
-            .overlay(alignment: .bottom) { Rectangle().frame(height: 1).foregroundStyle(NX.separator) }
+            .background(Color(hex: "#404040"))
+            .overlay(alignment: .bottom) { Rectangle().frame(height: 1).foregroundStyle(Color(hex: "#555555")) }
 
             VStack(alignment: .leading, spacing: 5) {
                 pathLine(work.sourcePath)
@@ -329,11 +326,11 @@ struct WorkProgressPanel: View {
             .padding(.vertical, 10)
         }
         .frame(width: 430)
-        .background(NX.bg)
+        .background(Color(hex: "#323232"))
         .overlay {
-            Rectangle().strokeBorder(NX.separator, lineWidth: 1)
+            Rectangle().strokeBorder(Color(hex: "#555555"), lineWidth: 1)
         }
-        .shadow(color: .black.opacity(0.6), radius: 24, x: 0, y: 10)
+        .shadow(color: .black.opacity(0.8), radius: 20, x: 0, y: 8)
     }
 
     @ViewBuilder
