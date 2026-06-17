@@ -55,7 +55,7 @@ struct ContentView: View {
             ZipNameDialog().environment(appState)
         }
         .overlay {
-            if appState.isWorking { WorkingOverlay().environment(appState) }
+            if appState.work != nil { WorkingOverlay().environment(appState) }
         }
         .overlay {
             if let conflict = appState.overwriteConflict {
@@ -258,23 +258,26 @@ struct WorkingOverlay: View {
     var body: some View {
         ZStack {
             Color.black.opacity(0.6).ignoresSafeArea()
-            WorkProgressPanel(appState: appState)
+            if let work = appState.work {
+                WorkProgressPanel(work: work, onCancel: { appState.cancelWork() })
+            }
         }
     }
 }
 
 struct WorkProgressPanel: View {
-    var appState: AppState
+    let work: WorkState
+    let onCancel: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             // 제목 바
             HStack {
-                Text(appState.workMessage)
+                Text(work.message)
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(NX.fileText)
                 Spacer()
-                Button { appState.cancelWork() } label: {
+                Button { onCancel() } label: {
                     Image(systemName: "xmark")
                         .font(.system(size: 10, weight: .bold))
                         .foregroundStyle(NX.infoText)
@@ -288,16 +291,16 @@ struct WorkProgressPanel: View {
 
             VStack(alignment: .leading, spacing: 5) {
                 // 소스 경로
-                pathLine(appState.workSourcePath)
+                pathLine(work.sourcePath)
                 // 목적지 경로
-                if !appState.workDestPath.isEmpty {
-                    pathLine(appState.workDestPath)
+                if !work.destPath.isEmpty {
+                    pathLine(work.destPath)
                 }
 
                 Spacer().frame(height: 2)
 
                 // 현재 파일명
-                Text(appState.workCurrentFile.isEmpty ? " " : appState.workCurrentFile)
+                Text(work.currentFile.isEmpty ? " " : work.currentFile)
                     .font(.system(size: 11))
                     .foregroundStyle(NX.infoText)
                     .lineLimit(1)
@@ -305,21 +308,21 @@ struct WorkProgressPanel: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
 
                 // 프로그레스 바
-                ProgressView(value: max(0.001, appState.workProgress))
-                    .tint(Color(hex: "#3DB06B"))  // 녹색
+                ProgressView(value: max(0.001, work.progress))
+                    .tint(Color(hex: "#3DB06B"))
 
                 // 하단: 크기 + 파일수 + 취소 버튼
                 HStack(spacing: 8) {
-                    Text(fmtBytes(appState.workBytes))
+                    Text(fmtBytes(work.bytes))
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundStyle(NX.infoText)
-                    Text(appState.workTotalCount > 0
-                         ? "\(appState.workFileCount) / \(appState.workTotalCount)"
-                         : "\(appState.workFileCount)")
+                    Text(work.totalCount > 0
+                         ? "\(work.fileCount) / \(work.totalCount)"
+                         : "\(work.fileCount)")
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundStyle(NX.infoText)
                     Spacer()
-                    Button("취소(C)") { appState.cancelWork() }
+                    Button("취소(C)") { onCancel() }
                         .controlSize(.small)
                         .keyboardShortcut("c", modifiers: [])
                 }

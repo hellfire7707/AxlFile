@@ -51,34 +51,78 @@ struct TabBarView: View {
     @Environment(AppState.self) private var appState
     var pane: PaneState
     var paneID: PaneID
+    @State private var showFavorites = false
+
+    private let fm = FileManager.default
+    private var favorites: [(name: String, icon: String, url: URL)] {
+        let home = fm.homeDirectoryForCurrentUser
+        return [
+            ("응용 프로그램", "app.badge",            URL(fileURLWithPath: "/Applications")),
+            ("데스크탑",     "menubar.dock.rectangle", home.appendingPathComponent("Desktop")),
+            ("문서",        "doc.fill",               home.appendingPathComponent("Documents")),
+            ("다운로드",     "arrow.down.circle.fill", home.appendingPathComponent("Downloads")),
+            ("홈",          "house.fill",             home),
+        ]
+    }
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 1) {
-                ForEach(Array(pane.tabs.enumerated()), id: \.element.id) { idx, tab in
-                    TabCell(
-                        tab: tab,
-                        isActive: pane.activeIndex == idx,
-                        onSelect: {
-                            pane.activeIndex = idx
-                            appState.activePaneID = paneID
-                            Task { await appState.loadTab(tab) }
-                        },
-                        onClose: { pane.closeTab(at: idx) }
-                    )
+        HStack(spacing: 0) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 1) {
+                    ForEach(Array(pane.tabs.enumerated()), id: \.element.id) { idx, tab in
+                        TabCell(
+                            tab: tab,
+                            isActive: pane.activeIndex == idx,
+                            onSelect: {
+                                pane.activeIndex = idx
+                                appState.activePaneID = paneID
+                                Task { await appState.loadTab(tab) }
+                            },
+                            onClose: { pane.closeTab(at: idx) }
+                        )
+                    }
+                    Button {
+                        appState.activePaneID = paneID
+                        appState.addNewTab(in: pane)
+                    } label: {
+                        Image(systemName: "plus")
+                            .font(.system(size: 10))
+                            .frame(width: 22, height: 24)
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.borderless)
                 }
-                Button {
-                    appState.activePaneID = paneID
-                    appState.addNewTab(in: pane)
-                } label: {
-                    Image(systemName: "plus")
+                .padding(.horizontal, 4)
+            }
+
+            if let tab = pane.activeTab {
+                Rectangle().frame(width: 1, height: 14).foregroundStyle(NX.separator)
+                // 즐겨찾기
+                Button { showFavorites.toggle() } label: {
+                    Image(systemName: "bookmark.fill")
                         .font(.system(size: 10))
-                        .frame(width: 22, height: 24)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(showFavorites ? Color.accentColor : NX.infoText)
+                        .frame(width: 24, height: 26)
                 }
                 .buttonStyle(.borderless)
+                .help("즐겨찾기")
+                .popover(isPresented: $showFavorites, arrowEdge: .bottom) {
+                    FavoritesPopover(tab: tab, systemFavorites: favorites) { url in
+                        showFavorites = false
+                        appState.navigate(tab: tab, to: url)
+                    }
+                    .environment(appState)
+                }
+                // 새로고침
+                Button { Task { await appState.loadTab(tab) } } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 10))
+                        .foregroundStyle(NX.infoText)
+                        .frame(width: 24, height: 26)
+                }
+                .buttonStyle(.borderless)
+                .help("새로고침")
             }
-            .padding(.horizontal, 4)
         }
         .frame(height: 26)
         .background(NX.tabBarBg)
@@ -138,21 +182,7 @@ struct PathBarView: View {
     var tab: TabInfo
     @State private var isEditing = false
     @State private var editText  = ""
-    @State private var showFavorites = false
     @FocusState private var editFocused: Bool
-
-    private let fm = FileManager.default
-
-    private var favorites: [(name: String, icon: String, url: URL)] {
-        let home = fm.homeDirectoryForCurrentUser
-        return [
-            ("응용 프로그램", "app.badge",         URL(fileURLWithPath: "/Applications")),
-            ("데스크탑",     "menubar.dock.rectangle", home.appendingPathComponent("Desktop")),
-            ("문서",        "doc.fill",            home.appendingPathComponent("Documents")),
-            ("다운로드",     "arrow.down.circle.fill", home.appendingPathComponent("Downloads")),
-            ("홈",          "house.fill",          home),
-        ]
-    }
 
     var body: some View {
         HStack(spacing: 4) {
@@ -217,30 +247,6 @@ struct PathBarView: View {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { editFocused = true }
                 }
 
-                // 즐겨찾기 버튼
-                Button { showFavorites.toggle() } label: {
-                    Image(systemName: "bookmark.fill")
-                        .font(.system(size: 10))
-                        .foregroundStyle(showFavorites ? Color.accentColor : NX.infoText)
-                }
-                .buttonStyle(.borderless)
-                .help("즐겨찾기")
-                .popover(isPresented: $showFavorites, arrowEdge: .bottom) {
-                    FavoritesPopover(tab: tab, systemFavorites: favorites) { url in
-                        showFavorites = false
-                        appState.navigate(tab: tab, to: url)
-                    }
-                    .environment(appState)
-                }
-
-                // 새로고침 버튼
-                Button {
-                    Task { await appState.loadTab(tab) }
-                } label: {
-                    Image(systemName: "arrow.clockwise").font(.system(size: 10)).foregroundStyle(NX.infoText)
-                }
-                .buttonStyle(.borderless)
-                .help("새로고침")
             }
         }
         .padding(.horizontal, 6)

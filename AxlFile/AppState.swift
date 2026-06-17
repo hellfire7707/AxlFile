@@ -4,6 +4,18 @@ import AppKit
 
 enum ClipboardOp { case copy, move }
 
+struct WorkState {
+    var message     = ""
+    var currentFile = ""
+    var sourcePath  = ""
+    var destPath    = ""
+    var bytes:    Int64 = 0
+    var fileCount = 0
+    var totalCount = 0
+    var progress: Double = 0
+    var cancelled = false
+}
+
 @MainActor
 @Observable
 class AppState {
@@ -39,17 +51,8 @@ class AppState {
     var clipboardOp: ClipboardOp = .copy
     private var lastPasteboardChangeCount: Int = -1
 
-    // 작업 진행
-    var isWorking       = false
-    var workProgress:   Double = 0
-    var workMessage     = ""
-    var workCurrentFile = ""
-    var workSourcePath  = ""
-    var workDestPath    = ""
-    var workBytes:      Int64 = 0
-    var workFileCount   = 0
-    var workTotalCount  = 0
-    var workCancelled   = false
+    // 작업 진행 (nil = 작업 없음, non-nil = 작업 중)
+    var work: WorkState? = nil
     private(set) var currentOperationMgr: FileOperationManager?
 
     // 상태 표시줄
@@ -303,21 +306,20 @@ class AppState {
         }
     }
 
-    private func resetWorkState(message: String) {
-        isWorking = true; workCancelled = false
-        workProgress = 0; workMessage = message
-        workCurrentFile = ""; workSourcePath = ""; workDestPath = ""
-        workBytes = 0; workFileCount = 0; workTotalCount = 0
+    private func resetWorkState(message: String, totalCount: Int = 0) {
+        work = WorkState(message: message, totalCount: totalCount)
     }
 
     private func updateWorkItem(_ item: FileItem, index: Int, total: Int,
                                 srcPath: String, dstPath: String) {
-        workCurrentFile = item.name
-        workSourcePath  = srcPath
-        workDestPath    = dstPath
-        workFileCount   = index + 1
-        workBytes      += item.size
-        workProgress    = Double(index + 1) / Double(total)
+        guard var w = work else { return }
+        w.currentFile = item.name
+        w.sourcePath  = srcPath
+        w.destPath    = dstPath
+        w.fileCount   = index + 1
+        w.bytes      += item.size
+        w.progress    = Double(index + 1) / Double(total)
+        work = w
     }
 
     // 로컬 파일을 재귀적으로 수집 (업로드용)
@@ -363,28 +365,26 @@ class AppState {
 
     private func updateSFTPProgress(name: String, src: String, dst: String,
                                     size: Int64, fileCount: inout Int, total: Int) {
-        workCurrentFile = name
-        workSourcePath  = src
-        workDestPath    = dst
-        workBytes      += size
-        fileCount      += 1
-        workFileCount   = fileCount
-        workProgress    = total > 0 ? Double(fileCount) / Double(total) : 0
+        guard var w = work else { return }
+        fileCount    += 1
+        w.currentFile = name
+        w.sourcePath  = src
+        w.destPath    = dst
+        w.bytes      += size
+        w.fileCount   = fileCount
+        w.progress    = total > 0 ? Double(fileCount) / Double(total) : 0
+        work = w
     }
 
     func cancelWork() {
-        workCancelled = true
+        work?.cancelled = true
         Task { await currentOperationMgr?.cancel() }
     }
 
     private func performTransfer(items: [FileItem], srcTab: TabInfo, dstTab: TabInfo, move: Bool) {
         Task {
             resetWorkState(message: move ? "이동 중..." : "복사 중...")
-            defer {
-                isWorking = false; workProgress = 0; workMessage = ""
-                workCurrentFile = ""; workSourcePath = ""; workDestPath = ""
-                currentOperationMgr = nil
-            }
+            defer { work = nil; currentOperationMgr = nil }
 
             do {
                 let srcIsSFTP = srcTab.sftpClient != nil
@@ -400,15 +400,14 @@ class AppState {
                         items: items.map { $0.url },
                         destination: dstTab.url,
                         conflictResolver: resolver,
-                        onTotal: { [weak self] t in self?.workTotalCount = t },
+                        onTotal: { [weak self] t in self?.work?.totalCount = t },
                         onFile: { [weak self] name, src, dst, size in
-                            self?.workCurrentFile = name
-                            self?.workSourcePath  = src
-                            self?.workDestPath    = dst
-                            self?.workBytes      += size
-                            self?.workFileCount  += 1
+                            guard let self, var w = self.work else { return }
+                            w.currentFile = name; w.sourcePath = src
+                            w.destPath    = dst;  w.bytes     += size; w.fileCount += 1
+                            self.work = w
                         },
-                        progress: { [weak self] p in self?.workProgress = p }
+                        progress: { [weak self] p in self?.work?.progress = p }
                     )
                 } else if !srcIsSFTP, let dstClient = dstTab.sftpClient {
                     // 로컬 → SFTP (업로드): 파일 단위 재귀 전송
@@ -420,10 +419,10 @@ class AppState {
                                               into: &uploadTasks)
                     }
                     let fileTotal = uploadTasks.filter { !$0.2 }.count
-                    workTotalCount = fileTotal
+                    work?.totalCount = fileTotal
                     var fileCount = 0
                     for (localURL, remPath, isDir, size) in uploadTasks {
-                        guard !workCancelled else { break }
+                        guard work?.cancelled != true else { break }
                         if isDir {
                             let rp = remPath
                             await Task.detached { dstClient.mkdir(remotePath: rp) }.value
@@ -441,8 +440,8 @@ class AppState {
                 } else if let srcClient = srcTab.sftpClient, !dstIsSFTP {
                     // SFTP → 로컬 (다운로드): 파일 단위 재귀 전송
                     let dstBase = dstTab.url
-                    workSourcePath = srcTab.url.path
-                    workDestPath   = dstBase.path
+                    work?.sourcePath = srcTab.url.path
+                    work?.destPath   = dstBase.path
                     var downloadTasks: [(String, URL, Bool, Int64)] = []
                     for item in items {
                         let localDst = dstBase.appendingPathComponent(item.name)
@@ -457,10 +456,10 @@ class AppState {
                         }.value
                     }
                     let fileTotal = downloadTasks.filter { !$0.2 }.count
-                    workTotalCount = fileTotal
+                    work?.totalCount = fileTotal
                     var fileCount = 0
                     for (remPath, localURL, isDir, size) in downloadTasks {
-                        guard !workCancelled else { break }
+                        guard work?.cancelled != true else { break }
                         if isDir {
                             try? FileManager.default.createDirectory(at: localURL,
                                                                      withIntermediateDirectories: true)
@@ -478,13 +477,13 @@ class AppState {
                 } else if let srcClient = srcTab.sftpClient,
                           let dstClient = dstTab.sftpClient {
                     let dstPath = dstTab.url.path
-                    workSourcePath = srcTab.url.path
-                    workDestPath   = dstPath
+                    work?.sourcePath = srcTab.url.path
+                    work?.destPath   = dstPath
                     if srcClient === dstClient {
                         // SFTP → SFTP (같은 서버)
-                        workTotalCount = items.count
+                        work?.totalCount = items.count
                         for (i, item) in items.enumerated() {
-                            guard !workCancelled else { break }
+                            guard work?.cancelled != true else { break }
                             let from = item.url.path
                             let to   = remotePath(dstPath, name: item.name)
                             updateWorkItem(item, index: i, total: items.count,
@@ -497,10 +496,10 @@ class AppState {
                         }
                     } else {
                         // SFTP → SFTP (다른 서버: 로컬 임시 경유)
-                        workTotalCount = items.count
+                        work?.totalCount = items.count
                         let tmp = FileManager.default.temporaryDirectory
                         for (i, item) in items.enumerated() {
-                            guard !workCancelled else { break }
+                            guard work?.cancelled != true else { break }
                             let rp = item.url.path
                             let localTmp = tmp.appendingPathComponent(item.name)
                             updateWorkItem(item, index: i, total: items.count,
@@ -528,15 +527,10 @@ class AppState {
                 srcTab.selectedIDs = []
                 statusMessage = move ? "이동 완료" : "복사 완료"
             } catch {
-                // 취소 또는 오류 시에도 대상 위치 새로고침
                 await reload(pane: oppositePane)
                 if move { await reload(pane: activePane) }
                 srcTab.selectedIDs = []
-                if workCancelled {
-                    statusMessage = "취소됨"
-                } else {
-                    statusMessage = "오류: \(error.localizedDescription)"
-                }
+                statusMessage = work?.cancelled == true ? "취소됨" : "오류: \(error.localizedDescription)"
             }
         }
     }
@@ -574,11 +568,7 @@ class AppState {
         let dst = destinationURL ?? dstTab.url
         let op = clipboardOp
         resetWorkState(message: op == .copy ? "복사 중..." : "이동 중...")
-        defer {
-            isWorking = false; workProgress = 0; workMessage = ""
-            workCurrentFile = ""; workSourcePath = ""; workDestPath = ""
-            currentOperationMgr = nil
-        }
+        defer { work = nil; currentOperationMgr = nil }
         let items = clipboard
         do {
             let mgr = FileOperationManager()
@@ -587,15 +577,14 @@ class AppState {
             try await mgr.perform(
                 op: op, items: items, destination: dst,
                 conflictResolver: resolver,
-                onTotal: { [weak self] t in self?.workTotalCount = t },
+                onTotal: { [weak self] t in self?.work?.totalCount = t },
                 onFile: { [weak self] name, src, dstPath, size in
-                    self?.workCurrentFile = name
-                    self?.workSourcePath  = src
-                    self?.workDestPath    = dstPath
-                    self?.workBytes      += size
-                    self?.workFileCount  += 1
+                    guard let self, var w = self.work else { return }
+                    w.currentFile = name; w.sourcePath = src
+                    w.destPath    = dstPath; w.bytes  += size; w.fileCount += 1
+                    self.work = w
                 },
-                progress: { [weak self] p in self?.workProgress = p }
+                progress: { [weak self] p in self?.work?.progress = p }
             )
             await reload(pane: destPane)
             if op == .move { clipboard = []; await reload(pane: activePane) }
@@ -603,12 +592,11 @@ class AppState {
             activePane.activeTab?.selectedIDs = []
             statusMessage = op == .copy ? "복사 완료" : "이동 완료"
         } catch {
-            // 취소 또는 오류 시에도 대상 위치 새로고침
             await reload(pane: destPane)
             if op == .move { await reload(pane: activePane) }
             dstTab.selectedIDs = []
             activePane.activeTab?.selectedIDs = []
-            statusMessage = workCancelled ? "취소됨" : "오류: \(error.localizedDescription)"
+            statusMessage = work?.cancelled == true ? "취소됨" : "오류: \(error.localizedDescription)"
         }
     }
 
@@ -637,19 +625,17 @@ class AppState {
         if let client = tab.sftpClient {
             Task {
                 resetWorkState(message: "삭제 중...")
-                workTotalCount = items.count
-                defer {
-                    isWorking = false; workProgress = 0; workMessage = ""
-                    workCurrentFile = ""; workSourcePath = ""
-                }
+                work?.totalCount = items.count
+                defer { work = nil }
                 do {
-                    workSourcePath = tab.url.path
+                    work?.sourcePath = tab.url.path
                     for (i, item) in items.enumerated() {
-                        guard !workCancelled else { break }
-                        workCurrentFile = item.name
-                        workFileCount   = i + 1
-                        workBytes      += item.size
-                        workProgress    = Double(i + 1) / Double(items.count)
+                        guard work?.cancelled != true else { break }
+                        guard var w = work else { break }
+                        w.currentFile = item.name; w.fileCount = i + 1
+                        w.bytes      += item.size
+                        w.progress    = Double(i + 1) / Double(items.count)
+                        work = w
                         let rp = item.url.path; let isDir = item.isDirectory
                         try await Task.detached {
                             try client.deleteItem(path: rp, isDirectory: isDir)
@@ -657,7 +643,7 @@ class AppState {
                     }
                     await reload(pane: activePane)
                     tab.selectedIDs = []
-                    statusMessage = workCancelled ? "취소됨" : "삭제 완료"
+                    statusMessage = work?.cancelled == true ? "취소됨" : "삭제 완료"
                 } catch {
                     await reload(pane: activePane)
                     tab.selectedIDs = []
@@ -669,29 +655,24 @@ class AppState {
 
         Task {
             resetWorkState(message: "삭제 중...")
-            workTotalCount = items.count
-            defer {
-                isWorking = false; workProgress = 0; workMessage = ""
-                workCurrentFile = ""; workSourcePath = ""
-                currentOperationMgr = nil
-            }
+            work?.totalCount = items.count
+            defer { work = nil; currentOperationMgr = nil }
             do {
                 let mgr = FileOperationManager()
                 currentOperationMgr = mgr
-                workSourcePath = activePane.activeTab?.url.path ?? ""
+                work?.sourcePath = activePane.activeTab?.url.path ?? ""
                 try await mgr.deleteItems(
                     items: items,
                     onFile: { [weak self] name, src, size in
-                        self?.workCurrentFile = name
-                        self?.workSourcePath  = src
-                        self?.workBytes      += size
-                        self?.workFileCount  += 1
+                        guard let self, var w = self.work else { return }
+                        w.currentFile = name; w.sourcePath = src; w.bytes += size; w.fileCount += 1
+                        self.work = w
                     },
-                    progress: { [weak self] p in self?.workProgress = p }
+                    progress: { [weak self] p in self?.work?.progress = p }
                 )
                 await reload(pane: activePane)
                 activePane.activeTab?.selectedIDs = []
-                statusMessage = workCancelled ? "취소됨" : "삭제 완료"
+                statusMessage = work?.cancelled == true ? "취소됨" : "삭제 완료"
             } catch {
                 await reload(pane: activePane)
                 activePane.activeTab?.selectedIDs = []
@@ -903,10 +884,10 @@ class AppState {
         let dst = tab.url.appendingPathComponent(dstName)
         Task {
             resetWorkState(message: "압축 해제 중...")
-            defer { isWorking = false; workProgress = 0; workMessage = "" }
+            defer { work = nil }
             do {
-                workCurrentFile = item.name
-                workProgress = 0.1
+                work?.currentFile = item.name
+                work?.progress = 0.1
                 try await extractArchive(at: item.url, to: dst)
                 await reload(pane: activePane)
                 statusMessage = "압축 해제 완료: \(dstName)"
@@ -938,10 +919,10 @@ class AppState {
         let urls = items.map { $0.url }
         Task {
             resetWorkState(message: "압축 중...")
-            defer { isWorking = false; workProgress = 0; workMessage = "" }
+            defer { work = nil }
             do {
-                workCurrentFile = name
-                workProgress = 0.1
+                work?.currentFile = name
+                work?.progress = 0.1
                 try await createZip(from: urls, to: dst)
                 await reload(pane: activePane)
                 statusMessage = "압축 완료: \(name)"
