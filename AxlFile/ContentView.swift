@@ -12,64 +12,66 @@ struct ContentView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            DualPaneView()
-                .environment(appState)
-            if appState.showCommandBar {
-                CommandBarView()
+        ZStack {
+            VStack(spacing: 0) {
+                DualPaneView()
+                    .environment(appState)
+                if appState.showCommandBar {
+                    CommandBarView()
+                        .environment(appState)
+                }
+                FunctionKeyBar()
                     .environment(appState)
             }
-            FunctionKeyBar()
-                .environment(appState)
-        }
-        .sheet(isPresented: Binding(get: { appState.showNewFolder }, set: { appState.showNewFolder = $0 })) {
-            NewFolderDialog().environment(appState)
-        }
-        .sheet(isPresented: Binding(get: { appState.showNewFile }, set: { appState.showNewFile = $0 })) {
-            NewFileDialog().environment(appState)
-        }
-        .sheet(isPresented: Binding(get: { appState.showRename }, set: { appState.showRename = $0 })) {
-            RenameDialog().environment(appState)
-        }
-        .sheet(isPresented: Binding(get: { appState.showViewer }, set: { appState.showViewer = $0 })) {
-            if let url = appState.viewerURL { ViewerView(url: url) }
-        }
-        .sheet(isPresented: Binding(get: { appState.showFTP }, set: { appState.showFTP = $0 })) {
-            SFTPConnectView().environment(appState)
-        }
-        .sheet(isPresented: Binding(get: { appState.showProperties }, set: { appState.showProperties = $0 })) {
-            if let url = appState.propertiesTarget { PropertiesView(url: url) }
-        }
-        .sheet(isPresented: Binding(get: { appState.showBookmarks }, set: { appState.showBookmarks = $0 })) {
-            BookmarkView().environment(appState)
-        }
-        .sheet(isPresented: Binding(get: { appState.showDiff }, set: { appState.showDiff = $0 })) {
-            if let l = appState.diffLeftURL, let r = appState.diffRightURL {
-                DiffView(leftURL: l, rightURL: r)
+            .sheet(isPresented: Binding(get: { appState.showNewFolder }, set: { appState.showNewFolder = $0 })) {
+                NewFolderDialog().environment(appState)
             }
-        }
-        .sheet(isPresented: Binding(get: { appState.showPermissions }, set: { appState.showPermissions = $0 })) {
-            if let url = appState.permissionsTarget { PermissionsView(url: url) }
-        }
-        .sheet(isPresented: Binding(get: { appState.showZipName }, set: { appState.showZipName = $0 })) {
-            ZipNameDialog().environment(appState)
-        }
-        .overlay {
-            if appState.work != nil { WorkingOverlay().environment(appState) }
-        }
-        .overlay {
+            .sheet(isPresented: Binding(get: { appState.showNewFile }, set: { appState.showNewFile = $0 })) {
+                NewFileDialog().environment(appState)
+            }
+            .sheet(isPresented: Binding(get: { appState.showRename }, set: { appState.showRename = $0 })) {
+                RenameDialog().environment(appState)
+            }
+            .sheet(isPresented: Binding(get: { appState.showViewer }, set: { appState.showViewer = $0 })) {
+                if let url = appState.viewerURL { ViewerView(url: url) }
+            }
+            .sheet(isPresented: Binding(get: { appState.showFTP }, set: { appState.showFTP = $0 })) {
+                SFTPConnectView().environment(appState)
+            }
+            .sheet(isPresented: Binding(get: { appState.showProperties }, set: { appState.showProperties = $0 })) {
+                if let url = appState.propertiesTarget { PropertiesView(url: url) }
+            }
+            .sheet(isPresented: Binding(get: { appState.showBookmarks }, set: { appState.showBookmarks = $0 })) {
+                BookmarkView().environment(appState)
+            }
+            .sheet(isPresented: Binding(get: { appState.showDiff }, set: { appState.showDiff = $0 })) {
+                if let l = appState.diffLeftURL, let r = appState.diffRightURL {
+                    DiffView(leftURL: l, rightURL: r)
+                }
+            }
+            .sheet(isPresented: Binding(get: { appState.showPermissions }, set: { appState.showPermissions = $0 })) {
+                if let url = appState.permissionsTarget { PermissionsView(url: url) }
+            }
+            .sheet(isPresented: Binding(get: { appState.showZipName }, set: { appState.showZipName = $0 })) {
+                ZipNameDialog().environment(appState)
+            }
+            .sheet(isPresented: Binding(
+                get: { appState.showDeleteConfirm },
+                set: { appState.showDeleteConfirm = $0 }
+            )) {
+                DeleteConfirmDialog().environment(appState)
+            }
+
+            // 다이얼로그 — ZStack 최상단 레이어로 패널 테두리보다 위에 렌더링
+            if appState.work != nil {
+                WorkingOverlay().environment(appState)
+            }
             if let conflict = appState.overwriteConflict {
                 OverwriteConflictDialog(conflict: conflict) { action in
                     appState.overwriteConflict = nil
                     conflict.resolve(action)
                 }
             }
-        }
-        .sheet(isPresented: Binding(
-            get: { appState.showDeleteConfirm },
-            set: { appState.showDeleteConfirm = $0 }
-        )) {
-            DeleteConfirmDialog().environment(appState)
         }
         .task {
             if let lt = appState.leftPane.activeTab {
