@@ -6,6 +6,7 @@ struct PropertiesView: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var info: FileProperties?
+    @State private var folderSize: String = "계산 중..."
 
     var body: some View {
         VStack(spacing: 0) {
@@ -45,7 +46,9 @@ struct PropertiesView: View {
                         VStack(spacing: 0) {
                             row("종류",    info.kind)
                             row("경로",    url.deletingLastPathComponent().path)
-                            if !info.isDirectory {
+                            if info.isDirectory {
+                                rowWithIndicator("크기", folderSize)
+                            } else {
                                 row("크기",    info.sizeString)
                             }
                             row("생성일",  info.createdString)
@@ -83,7 +86,14 @@ struct PropertiesView: View {
         }
         .frame(width: 360)
         .background(NX.bg)
-        .task { info = FileProperties(url: url) }
+        .task {
+            info = FileProperties(url: url)
+            guard info?.isDirectory == true else { return }
+            let bytes = await Task.detached(priority: .userInitiated) {
+                FileProperties.calcDirectorySize(url: url)
+            }.value
+            folderSize = FileProperties.formatBytes(bytes)
+        }
     }
 
     @ViewBuilder
@@ -99,6 +109,30 @@ struct PropertiesView: View {
                 .foregroundStyle(NX.fileText)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 5)
+        .background(Color.clear)
+    }
+
+    @ViewBuilder
+    private func rowWithIndicator(_ label: String, _ value: String) -> some View {
+        HStack(alignment: .top, spacing: 0) {
+            Text(label)
+                .font(.system(size: 11))
+                .foregroundStyle(NX.infoText)
+                .frame(width: 90, alignment: .trailing)
+                .padding(.trailing, 10)
+            HStack(spacing: 6) {
+                Text(value)
+                    .font(.system(size: 11))
+                    .foregroundStyle(NX.fileText)
+                    .textSelection(.enabled)
+                if value == "계산 중..." {
+                    ProgressView().controlSize(.mini)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 5)
@@ -147,10 +181,7 @@ struct FileProperties {
 
         // Size
         let bytes = Int64(res.fileSize ?? 0)
-        if bytes < 1024 { sizeString = "\(bytes) B" }
-        else if bytes < 1_048_576 { sizeString = String(format: "%.1f KB (%@ 바이트)", Double(bytes)/1024, FileProperties.numFmt.string(from: NSNumber(value: bytes)) ?? "") }
-        else if bytes < 1_073_741_824 { sizeString = String(format: "%.1f MB (%@ 바이트)", Double(bytes)/1_048_576, FileProperties.numFmt.string(from: NSNumber(value: bytes)) ?? "") }
-        else { sizeString = String(format: "%.2f GB (%@ 바이트)", Double(bytes)/1_073_741_824, FileProperties.numFmt.string(from: NSNumber(value: bytes)) ?? "") }
+        sizeString = FileProperties.formatBytes(bytes)
 
         // Dates
         createdString  = res.creationDate.map { Self.dateFmt.string(from: $0) } ?? "-"
@@ -170,6 +201,32 @@ struct FileProperties {
         } else {
             symlinkDest = nil
         }
+    }
+
+    static func formatBytes(_ bytes: Int64) -> String {
+        let n = NSNumber(value: bytes)
+        let comma = numFmt.string(from: n) ?? "\(bytes)"
+        if bytes < 1024 { return "\(bytes) B" }
+        else if bytes < 1_048_576 { return String(format: "%.1f KB (%@ 바이트)", Double(bytes)/1024, comma) }
+        else if bytes < 1_073_741_824 { return String(format: "%.1f MB (%@ 바이트)", Double(bytes)/1_048_576, comma) }
+        else { return String(format: "%.2f GB (%@ 바이트)", Double(bytes)/1_073_741_824, comma) }
+    }
+
+    static func calcDirectorySize(url: URL) -> Int64 {
+        var total: Int64 = 0
+        let keys: [URLResourceKey] = [.fileSizeKey, .isRegularFileKey]
+        guard let enumerator = FileManager.default.enumerator(
+            at: url,
+            includingPropertiesForKeys: keys,
+            options: []
+        ) else { return 0 }
+        for case let fileURL as URL in enumerator {
+            let res = try? fileURL.resourceValues(forKeys: Set(keys))
+            if res?.isRegularFile == true {
+                total += Int64(res?.fileSize ?? 0)
+            }
+        }
+        return total
     }
 
     private static let numFmt: NumberFormatter = {

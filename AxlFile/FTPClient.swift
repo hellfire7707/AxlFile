@@ -57,6 +57,14 @@ final class SFTPClient: @unchecked Sendable {
     nonisolated(unsafe) private(set) var isConnected = false
     nonisolated(unsafe) private(set) var currentPath = "/"
 
+    // 재연결 직렬화 + 최근 검증 시각 캐시
+    private let reconnectLock = NSLock()
+    nonisolated(unsafe) private var lastVerified = Date.distantPast
+
+    // 진행 중인 전송(scp) 프로세스 — 취소 시 종료용
+    private let transferLock = NSLock()
+    nonisolated(unsafe) private var activeTransfer: Process?
+
     init(host: String, port: Int = 22, username: String,
          password: String = "", useKeyAuth: Bool = false) {
         self.host       = host
@@ -90,6 +98,10 @@ final class SFTPClient: @unchecked Sendable {
             "-o", "PasswordAuthentication=\(useKeyAuth ? "no" : "yes")",
             "-o", "BatchMode=\(useKeyAuth ? "yes" : "no")",
             "-o", "ConnectTimeout=15",
+            // 연결 유지(keepalive). 서버가 응답 없으면 마스터가 종료돼
+            // 소켓이 정리되므로 controlMasterAlive()가 끊김을 감지할 수 있다.
+            "-o", "ServerAliveInterval=15",
+            "-o", "ServerAliveCountMax=3",
             "-p", "\(port)",
             "\(username)@\(host)"
         ]
@@ -112,6 +124,7 @@ final class SFTPClient: @unchecked Sendable {
         }
 
         isConnected = true
+        lastVerified = Date()
         let pwd = runRemote("pwd")
         if pwd.exitCode == 0 {
             currentPath = pwd.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -122,12 +135,41 @@ final class SFTPClient: @unchecked Sendable {
         _ = sshExec(["-S", controlPath, "-O", "exit", "\(username)@\(host)"], timeout: 5)
         cleanup()
         isConnected = false
+        lastVerified = .distantPast
+    }
+
+    // MARK: - 연결 검증 / 자동 재연결
+
+    /// ControlMaster 소켓이 살아있는지 확인.
+    nonisolated private func controlMasterAlive() -> Bool {
+        let chk = sshExec(["-S", controlPath, "-O", "check", "\(username)@\(host)"], timeout: 8)
+        return chk.exitCode == 0
+    }
+
+    /// 작업 전 연결 상태를 검증하고, 끊겼으면 재연결한다.
+    /// 짧은 시간(3초) 내 재검증은 캐시해 재귀 작업의 오버헤드를 줄인다.
+    nonisolated func ensureConnected() throws {
+        reconnectLock.lock()
+        defer { reconnectLock.unlock() }
+
+        // 최근에 검증됐으면 통과
+        if isConnected && Date().timeIntervalSince(lastVerified) < 3 { return }
+
+        // 소켓 생존 확인
+        if isConnected && controlMasterAlive() {
+            lastVerified = Date()
+            return
+        }
+
+        // 끊김 → 재연결 (connect 내부에서 controlPath 정리 후 새로 연결)
+        isConnected = false
+        try connect()
     }
 
     // MARK: - Directory List
 
     nonisolated func list(path: String) throws -> [SFTPEntry] {
-        guard isConnected else { throw SFTPError.notConnected }
+        try ensureConnected()
         let r = runRemote("LC_ALL=C ls -la \(q(path)) 2>&1")
         return parseLs(r.stdout, base: path)
     }
@@ -135,32 +177,32 @@ final class SFTPClient: @unchecked Sendable {
     // MARK: - File Operations (원격)
 
     nonisolated func mkdir(path: String) throws {
-        guard isConnected else { throw SFTPError.notConnected }
+        try ensureConnected()
         let r = runRemote("mkdir -p \(q(path))")
         guard r.exitCode == 0 else { throw SFTPError.commandFailed(r.stderr) }
     }
 
     nonisolated func deleteItem(path: String, isDirectory: Bool) throws {
-        guard isConnected else { throw SFTPError.notConnected }
+        try ensureConnected()
         let cmd = isDirectory ? "rm -rf \(q(path))" : "rm -f \(q(path))"
         let r = runRemote(cmd)
         guard r.exitCode == 0 else { throw SFTPError.commandFailed(r.stderr) }
     }
 
     nonisolated func rename(from: String, to: String) throws {
-        guard isConnected else { throw SFTPError.notConnected }
+        try ensureConnected()
         let r = runRemote("mv \(q(from)) \(q(to))")
         guard r.exitCode == 0 else { throw SFTPError.commandFailed(r.stderr) }
     }
 
     nonisolated func copyRemote(from: String, to: String) throws {
-        guard isConnected else { throw SFTPError.notConnected }
+        try ensureConnected()
         let r = runRemote("cp -r \(q(from)) \(q(to))")
         guard r.exitCode == 0 else { throw SFTPError.commandFailed(r.stderr) }
     }
 
     nonisolated func createFile(path: String) throws {
-        guard isConnected else { throw SFTPError.notConnected }
+        try ensureConnected()
         let r = runRemote("touch \(q(path))")
         guard r.exitCode == 0 else { throw SFTPError.commandFailed(r.stderr) }
     }
@@ -168,27 +210,64 @@ final class SFTPClient: @unchecked Sendable {
     // MARK: - Upload / Download (scp)
 
     nonisolated func upload(localURL: URL, remotePath: String) throws {
-        guard isConnected else { throw SFTPError.notConnected }
-        let r = execProcess("/usr/bin/scp", args: [
+        try ensureConnected()
+        let r = runTransfer(args: [
             "-r", "-P", "\(port)",
             "-o", "ControlPath=\(controlPath)",
             "-o", "StrictHostKeyChecking=accept-new",
             localURL.path,
             "\(username)@\(host):\(remotePath)"
-        ], env: [:], timeout: 300)
+        ])
         guard r.exitCode == 0 else { throw SFTPError.transferFailed(r.stderr) }
     }
 
     nonisolated func download(remotePath: String, localURL: URL) throws {
-        guard isConnected else { throw SFTPError.notConnected }
-        let r = execProcess("/usr/bin/scp", args: [
+        try ensureConnected()
+        let r = runTransfer(args: [
             "-r", "-P", "\(port)",
             "-o", "ControlPath=\(controlPath)",
             "-o", "StrictHostKeyChecking=accept-new",
             "\(username)@\(host):\(remotePath)",
             localURL.path
-        ], env: [:], timeout: 300)
+        ])
         guard r.exitCode == 0 else { throw SFTPError.transferFailed(r.stderr) }
+    }
+
+    /// 원격 파일의 바이트 크기 (진행률 폴링용). 실패 시 0.
+    nonisolated func remoteFileSize(path: String) -> Int64 {
+        let r = runRemote("stat -c %s \(q(path)) 2>/dev/null || stat -f %z \(q(path)) 2>/dev/null")
+        return Int64(r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+    }
+
+    /// 진행 중인 전송(scp)을 즉시 종료한다 (취소).
+    nonisolated func cancelActiveTransfer() {
+        transferLock.lock()
+        let p = activeTransfer
+        transferLock.unlock()
+        p?.terminate()
+    }
+
+    /// scp 전송 실행 — 취소가 가능하도록 프로세스를 추적한다.
+    nonisolated private func runTransfer(args: [String]) -> ProcessResult {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/scp")
+        p.arguments = args
+        p.environment = ProcessInfo.processInfo.environment
+        let outPipe = Pipe(); let errPipe = Pipe()
+        p.standardOutput = outPipe; p.standardError = errPipe
+        guard (try? p.run()) != nil else {
+            return ProcessResult(exitCode: -1, stdout: "", stderr: "프로세스 실행 실패")
+        }
+        transferLock.lock(); activeTransfer = p; transferLock.unlock()
+        let out = outPipe.fileHandleForReading.readDataToEndOfFile()
+        let err = errPipe.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
+        transferLock.lock(); activeTransfer = nil; transferLock.unlock()
+        return ProcessResult(
+            exitCode: Int(p.terminationStatus),
+            stdout: String(data: out, encoding: .utf8) ?? "",
+            stderr: String(data: err, encoding: .utf8) ?? ""
+        )
     }
 
     nonisolated func mkdir(remotePath: String) {

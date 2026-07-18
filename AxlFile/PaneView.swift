@@ -246,6 +246,15 @@ struct PathBarView: View {
                     isEditing = true
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { editFocused = true }
                 }
+                .contextMenu {
+                    Button {
+                        let pb = NSPasteboard.general
+                        pb.clearContents()
+                        pb.setString(tab.url.path, forType: .string)
+                    } label: {
+                        Label("경로 복사", systemImage: "doc.on.doc")
+                    }
+                }
 
             }
         }
@@ -562,6 +571,7 @@ struct DriveRowView: View {
     var vol: VolumeInfo
     var isCursor: Bool = false
     var onTap: () -> Void
+    var onDoubleTap: () -> Void = {}
     @State private var icon: NSImage?
     @State private var hovered = false
 
@@ -603,6 +613,8 @@ struct DriveRowView: View {
         .frame(height: 20)
         .background(isCursor ? NX.cursor : hovered ? NX.cursor.opacity(0.4) : Color.clear)
         .onHover { hovered = $0 }
+        .contentShape(Rectangle())
+        .onTapGesture(count: 2) { onDoubleTap() }
         .onTapGesture { onTap() }
         .onAppear {
             icon = NSWorkspace.shared.icon(forFile: vol.url.path)

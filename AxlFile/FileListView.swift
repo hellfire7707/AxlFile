@@ -93,9 +93,12 @@ struct FileListView: View {
                             ))
                         }
                         ForEach(Array(driveVolumes.enumerated()), id: \.element.id) { idx, vol in
-                            DriveRowView(vol: vol, isCursor: idx == tab.driveCursorIndex) {
-                                tapDrive(idx: idx, vol: vol)
-                            }
+                            DriveRowView(
+                                vol: vol,
+                                isCursor: idx == tab.driveCursorIndex,
+                                onTap: { selectDrive(idx: idx) },
+                                onDoubleTap: { openDrive(idx: idx, vol: vol) }
+                            )
                             .id("drive_\(idx)")
                         }
                     }
@@ -123,9 +126,12 @@ struct FileListView: View {
                             ))
                         }
                         ForEach(Array(driveVolumes.enumerated()), id: \.element.id) { idx, vol in
-                            DriveGridCellView(vol: vol, isCursor: idx == tab.driveCursorIndex) {
-                                tapDrive(idx: idx, vol: vol)
-                            }
+                            DriveGridCellView(
+                                vol: vol,
+                                isCursor: idx == tab.driveCursorIndex,
+                                onTap: { selectDrive(idx: idx) },
+                                onDoubleTap: { openDrive(idx: idx, vol: vol) }
+                            )
                             .id("drive_\(idx)")
                         }
                     }
@@ -320,12 +326,9 @@ struct FileListView: View {
         // F4 반대 패널로 이동
         case "\u{F707}": appState.moveSelectionToOpposite(); return .handled
 
-        // F5 새로고침
+        // F5 새로고침 (활성 패널만)
         case "\u{F708}":
-            Task {
-                await appState.reload(pane: appState.leftPane)
-                await appState.reload(pane: appState.rightPane)
-            }
+            Task { await appState.reload(pane: appState.activePane) }
             return .handled
 
         // F7 새 폴더
@@ -410,7 +413,18 @@ struct FileListView: View {
         }
     }
 
-    private func tapDrive(idx: Int, vol: VolumeInfo) {
+    // 한 번 클릭: 일반 항목처럼 커서만 이동(선택)
+    private func selectDrive(idx: Int) {
+        appState.activePaneID = paneID
+        focusedPane.wrappedValue = paneID
+        anchorID = nil
+        tab.driveCursorIndex = idx
+        tab.cursorID     = nil
+        tab.selectedIDs  = []
+    }
+
+    // 더블 클릭: 드라이브로 이동
+    private func openDrive(idx: Int, vol: VolumeInfo) {
         tab.driveCursorIndex = idx
         tab.cursorID     = nil
         tab.selectedIDs  = []
@@ -435,28 +449,31 @@ struct FileListView: View {
         paneID == .left ? appState.leftPane : appState.rightPane
     }
 
+    // 파일 목록과 드라이브 목록을 하나의 선형 인덱스로 보고 커서를 이동.
+    // [0 ..< files.count) = 파일,  [files.count ..< files.count+drives) = 드라이브
     private func moveCursor(by delta: Int) {
-        // 드라이브 커서 모드
-        if let di = tab.driveCursorIndex {
-            let next = di + delta
-            if next < 0 {
-                // 드라이브 위로 → 파일 목록 마지막으로
-                tab.driveCursorIndex = nil
-                tab.cursorID = files.last?.id
-            } else {
-                tab.driveCursorIndex = min(next, driveVolumes.count - 1)
-            }
-            return
-        }
-        guard !files.isEmpty else { return }
-        let cur  = files.firstIndex { $0.id == tab.cursorID } ?? 0
-        let next = cur + delta
-        if next >= files.count, !driveVolumes.isEmpty {
-            // 파일 아래로 → 드라이브 첫 항목으로
-            tab.cursorID = nil
-            tab.driveCursorIndex = 0
+        let fileCount = files.count
+        let total = fileCount + driveVolumes.count
+        guard total > 0 else { return }
+
+        let current = currentLinearIndex(fileCount: fileCount)
+        let next = max(0, min(total - 1, current + delta))
+        applyLinearCursor(next, fileCount: fileCount)
+    }
+
+    private func currentLinearIndex(fileCount: Int) -> Int {
+        if let di = tab.driveCursorIndex { return fileCount + min(di, driveVolumes.count - 1) }
+        if let cid = tab.cursorID, let fi = files.firstIndex(where: { $0.id == cid }) { return fi }
+        return 0
+    }
+
+    private func applyLinearCursor(_ index: Int, fileCount: Int) {
+        if index < fileCount {
+            tab.driveCursorIndex = nil
+            tab.cursorID = files[index].id
         } else {
-            tab.cursorID = files[max(0, min(files.count - 1, next))].id
+            tab.cursorID = nil
+            tab.driveCursorIndex = index - fileCount
         }
     }
 
@@ -1081,6 +1098,7 @@ struct DriveGridCellView: View {
     var vol: VolumeInfo
     var isCursor: Bool
     var onTap: () -> Void
+    var onDoubleTap: () -> Void = {}
     @State private var icon: NSImage?
     @State private var hovered = false
 
@@ -1102,6 +1120,8 @@ struct DriveGridCellView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(isCursor ? NX.cursor : hovered ? NX.cursor.opacity(0.4) : Color.clear)
         .onHover { hovered = $0 }
+        .contentShape(Rectangle())
+        .onTapGesture(count: 2) { onDoubleTap() }
         .onTapGesture { onTap() }
         .onAppear { icon = NSWorkspace.shared.icon(forFile: vol.url.path) }
     }

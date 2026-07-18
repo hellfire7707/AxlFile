@@ -54,6 +54,8 @@ class AppState {
     // 작업 진행 (nil = 작업 없음, non-nil = 작업 중)
     var work: WorkState? = nil
     private(set) var currentOperationMgr: FileOperationManager?
+    // 진행 중인 SFTP 전송 클라이언트 (취소용)
+    private(set) var currentSFTPClient: SFTPClient?
 
     // 상태 표시줄
     var statusMessage = ""
@@ -145,12 +147,19 @@ class AppState {
 
     // MARK: - 디렉토리 로드
 
-    func loadTab(_ tab: TabInfo, selectingName: String? = nil) async {
+    func loadTab(_ tab: TabInfo, selectingName: String? = nil, resetCursor: Bool = false) async {
         let showHidden = pane(containing: tab).showHidden
         if let client = tab.sftpClient {
             await loadSFTPTab(tab, client: client)
             return
         }
+        // 새로고침 전 커서 위치(이름 + 표시 인덱스) 기억 → 원복용
+        let prevDisplay    = tab.displayFiles(showHidden: showHidden)
+        let prevCursorName = tab.cursorFile?.name
+        let prevIndex      = prevCursorName.flatMap { name in
+            prevDisplay.firstIndex { $0.name == name }
+        }
+
         tab.isLoading = true
         let url = tab.url
         let result: Result<[FileItem], Error> = await withCheckedContinuation { cont in
@@ -166,6 +175,15 @@ class AppState {
             let sorted = tab.displayFiles(showHidden: showHidden)
             if let name = selectingName, let target = sorted.first(where: { $0.name == name }) {
                 tab.cursorID = target.id
+            } else if resetCursor {
+                // 새 디렉토리 진입 → 커서를 첫 항목으로
+                tab.cursorID = sorted.first?.id
+            } else if let name = prevCursorName, let target = sorted.first(where: { $0.name == name }) {
+                // 같은 이름 항목이 남아있으면 그 위치 유지
+                tab.cursorID = target.id
+            } else if let idx = prevIndex, !sorted.isEmpty {
+                // 커서 항목이 삭제/이름변경됨 → 같은 인덱스(범위 클램프)로 원복
+                tab.cursorID = sorted[min(idx, sorted.count - 1)].id
             } else if tab.cursorID == nil || !items.contains(where: { $0.id == tab.cursorID }) {
                 tab.cursorID = sorted.first?.id
             }
@@ -214,7 +232,8 @@ class AppState {
     }
 
     func navigate(tab: TabInfo, to url: URL, selectingName: String? = nil) {
-        if url != tab.url {
+        let isNewDir = url != tab.url
+        if isNewDir {
             tab.historyBack.append(tab.url)
             tab.historyForward.removeAll()
         }
@@ -223,7 +242,9 @@ class AppState {
         if url.scheme != "sftp" {
             UserDefaults.standard.set(url.path, forKey: "lastOpenedPath")
         }
-        Task { await loadTab(tab, selectingName: selectingName) }
+        // 새 디렉토리로 진입할 때(selectingName 미지정)는 커서를 첫 항목으로 리셋
+        let resetCursor = isNewDir && selectingName == nil
+        Task { await loadTab(tab, selectingName: selectingName, resetCursor: resetCursor) }
     }
 
     func navigateBack(tab: TabInfo) {
@@ -363,28 +384,51 @@ class AppState {
         }
     }
 
-    private func updateSFTPProgress(name: String, src: String, dst: String,
-                                    size: Int64, fileCount: inout Int, total: Int) {
+    // 전송 시작 시 현재 파일 정보 표시 (진행률은 건드리지 않음)
+    private func setTransferFile(name: String, src: String, dst: String, fileCount: Int) {
         guard var w = work else { return }
-        fileCount    += 1
         w.currentFile = name
         w.sourcePath  = src
         w.destPath    = dst
-        w.bytes      += size
         w.fileCount   = fileCount
-        w.progress    = total > 0 ? Double(fileCount) / Double(total) : 0
         work = w
+    }
+
+    // 누적 바이트/진행률 갱신
+    private func setTransferBytes(_ done: Int64, totalBytes: Int64) {
+        guard var w = work else { return }
+        w.bytes    = done
+        w.progress = totalBytes > 0 ? Double(done) / Double(totalBytes) : 0
+        work = w
+    }
+
+    // 파일 1개를 전송하면서, 전송된 크기를 주기적으로 폴링해 진행률을 갱신한다.
+    // sizeProvider: 현재까지 전송된 바이트 (다운로드=로컬 파일 크기, 업로드=원격 stat)
+    private func transferOneFile(base: Int64, fileSize: Int64, totalBytes: Int64,
+                                 sizeProvider: @escaping @Sendable () -> Int64,
+                                 transfer: @escaping @Sendable () throws -> Void) async throws {
+        let poller = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 400_000_000)
+                guard let self else { return }
+                let cur = base + min(fileSize, await Task.detached { sizeProvider() }.value)
+                self.setTransferBytes(cur, totalBytes: totalBytes)
+            }
+        }
+        defer { poller.cancel() }
+        try await Task.detached { try transfer() }.value
     }
 
     func cancelWork() {
         work?.cancelled = true
         Task { await currentOperationMgr?.cancel() }
+        currentSFTPClient?.cancelActiveTransfer()
     }
 
     private func performTransfer(items: [FileItem], srcTab: TabInfo, dstTab: TabInfo, move: Bool) {
         Task {
             resetWorkState(message: move ? "이동 중..." : "복사 중...")
-            defer { work = nil; currentOperationMgr = nil }
+            defer { work = nil; currentOperationMgr = nil; currentSFTPClient = nil }
 
             do {
                 let srcIsSFTP = srcTab.sftpClient != nil
@@ -424,20 +468,29 @@ class AppState {
                                               remote: remotePath(dstPath, name: item.name),
                                               into: &uploadTasks)
                     }
-                    let fileTotal = uploadTasks.filter { !$0.2 }.count
+                    currentSFTPClient = dstClient
+                    let fileTotal  = uploadTasks.filter { !$0.2 }.count
+                    let totalBytes = uploadTasks.filter { !$0.2 }.reduce(Int64(0)) { $0 + $1.3 }
                     work?.totalCount = fileTotal
                     var fileCount = 0
+                    var doneBytes: Int64 = 0
                     for (localURL, remPath, isDir, size) in uploadTasks {
                         guard work?.cancelled != true else { break }
                         if isDir {
                             let rp = remPath
                             await Task.detached { dstClient.mkdir(remotePath: rp) }.value
                         } else {
-                            updateSFTPProgress(name: localURL.lastPathComponent,
-                                               src: localURL.path, dst: remPath,
-                                               size: size, fileCount: &fileCount, total: fileTotal)
+                            fileCount += 1
+                            setTransferFile(name: localURL.lastPathComponent,
+                                            src: localURL.path, dst: remPath, fileCount: fileCount)
                             let local = localURL, remote = remPath
-                            try await Task.detached { try dstClient.upload(localURL: local, remotePath: remote) }.value
+                            try await transferOneFile(
+                                base: doneBytes, fileSize: size, totalBytes: totalBytes,
+                                sizeProvider: { dstClient.remoteFileSize(path: remote) },
+                                transfer: { try dstClient.upload(localURL: local, remotePath: remote) }
+                            )
+                            doneBytes += size
+                            setTransferBytes(doneBytes, totalBytes: totalBytes)
                             if move { try? FileManager.default.removeItem(at: localURL) }
                         }
                     }
@@ -461,20 +514,32 @@ class AppState {
                                                             into: &downloadTasks)
                         }.value
                     }
-                    let fileTotal = downloadTasks.filter { !$0.2 }.count
+                    currentSFTPClient = srcClient
+                    let fileTotal  = downloadTasks.filter { !$0.2 }.count
+                    let totalBytes = downloadTasks.filter { !$0.2 }.reduce(Int64(0)) { $0 + $1.3 }
                     work?.totalCount = fileTotal
                     var fileCount = 0
+                    var doneBytes: Int64 = 0
                     for (remPath, localURL, isDir, size) in downloadTasks {
                         guard work?.cancelled != true else { break }
                         if isDir {
                             try? FileManager.default.createDirectory(at: localURL,
                                                                      withIntermediateDirectories: true)
                         } else {
-                            updateSFTPProgress(name: localURL.lastPathComponent,
-                                               src: remPath, dst: localURL.path,
-                                               size: size, fileCount: &fileCount, total: fileTotal)
+                            fileCount += 1
+                            setTransferFile(name: localURL.lastPathComponent,
+                                            src: remPath, dst: localURL.path, fileCount: fileCount)
                             let rp = remPath, local = localURL
-                            try await Task.detached { try srcClient.download(remotePath: rp, localURL: local) }.value
+                            try await transferOneFile(
+                                base: doneBytes, fileSize: size, totalBytes: totalBytes,
+                                sizeProvider: {
+                                    (try? local.resourceValues(forKeys: [.fileSizeKey]).fileSize)
+                                        .map(Int64.init) ?? 0
+                                },
+                                transfer: { try srcClient.download(remotePath: rp, localURL: local) }
+                            )
+                            doneBytes += size
+                            setTransferBytes(doneBytes, totalBytes: totalBytes)
                             if move {
                                 try await Task.detached { try srcClient.deleteItem(path: rp, isDirectory: false) }.value
                             }
@@ -510,10 +575,12 @@ class AppState {
                             let localTmp = tmp.appendingPathComponent(item.name)
                             updateWorkItem(item, index: i, total: items.count,
                                            srcPath: rp, dstPath: remotePath(dstPath, name: item.name))
+                            currentSFTPClient = srcClient
                             try await Task.detached {
                                 try srcClient.download(remotePath: rp, localURL: localTmp)
                             }.value
                             let remDst = remotePath(dstPath, name: item.name)
+                            currentSFTPClient = dstClient
                             try await Task.detached {
                                 try dstClient.upload(localURL: localTmp, remotePath: remDst)
                             }.value
@@ -778,7 +845,7 @@ class AppState {
             Task {
                 do {
                     try await Task.detached { try client.rename(from: from, to: to) }.value
-                    await reload(pane: activePane)
+                    await loadTab(tab, selectingName: newName)
                     statusMessage = "이름 변경: \(newName)"
                 } catch { statusMessage = "오류: \(error.localizedDescription)" }
             }
@@ -789,7 +856,7 @@ class AppState {
             do {
                 let dst = item.url.deletingLastPathComponent().appendingPathComponent(newName)
                 try FileManager.default.moveItem(at: item.url, to: dst)
-                await reload(pane: activePane)
+                await loadTab(tab, selectingName: newName)
                 statusMessage = "이름 변경: \(newName)"
             } catch { statusMessage = "오류: \(error.localizedDescription)" }
         }
