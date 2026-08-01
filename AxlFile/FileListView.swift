@@ -51,6 +51,7 @@ struct FileListView: View {
         .background(NX.listBg)
         .focusable()
         .focused(focusedPane, equals: paneID)
+        .focusEffectDisabled()          // 시스템 파란 포커스 링 제거 (활성 패널은 탭 색으로 표시)
         .onKeyPress { handleKey($0) }
         .task { await loadDrives() }
         .onReceive(NSWorkspace.shared.notificationCenter

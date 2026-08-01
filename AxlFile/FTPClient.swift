@@ -170,7 +170,12 @@ final class SFTPClient: @unchecked Sendable {
 
     nonisolated func list(path: String) throws -> [SFTPEntry] {
         try ensureConnected()
-        let r = runRemote("LC_ALL=C ls -la \(q(path)) 2>&1")
+        // stderr 를 stdout 으로 합치면 오류 메시지가 목록 항목으로 파싱되므로 분리해서 받는다
+        let r = runRemote("LC_ALL=C ls -la -- \(q(path))")
+        guard r.exitCode == 0 else {
+            let msg = r.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            throw SFTPError.commandFailed(msg.isEmpty ? "\(path) 목록 조회 실패" : msg)
+        }
         return parseLs(r.stdout, base: path)
     }
 
@@ -178,33 +183,55 @@ final class SFTPClient: @unchecked Sendable {
 
     nonisolated func mkdir(path: String) throws {
         try ensureConnected()
-        let r = runRemote("mkdir -p \(q(path))")
-        guard r.exitCode == 0 else { throw SFTPError.commandFailed(r.stderr) }
+        let p = q(path)
+        // mkdir -p 는 이미 존재해도 0을 반환하므로 사전 검사로 구분한다
+        try runChecked("if [ -e \(p) ]; then echo '이미 존재합니다' >&2; exit 1; fi; mkdir -p -- \(p)",
+                       fallback: "폴더 생성 실패")
     }
 
     nonisolated func deleteItem(path: String, isDirectory: Bool) throws {
         try ensureConnected()
-        let cmd = isDirectory ? "rm -rf \(q(path))" : "rm -f \(q(path))"
+        let p = q(path)
+        // rm -f 는 대상이 없거나 일부 실패에도 0을 반환해 성공으로 오인된다.
+        // 삭제 후 실제로 사라졌는지 검증해서 조용한 실패를 막는다. (-L: 깨진 심볼릭 링크)
+        let rm  = isDirectory ? "rm -rf -- \(p)" : "rm -f -- \(p)"
+        let cmd = "\(rm); if [ -e \(p) ] || [ -L \(p) ]; then echo '삭제되지 않음 — 권한을 확인하세요' >&2; exit 1; fi"
         let r = runRemote(cmd)
-        guard r.exitCode == 0 else { throw SFTPError.commandFailed(r.stderr) }
+        guard r.exitCode == 0 else {
+            let msg = r.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            throw SFTPError.commandFailed(
+                msg.isEmpty ? "\((path as NSString).lastPathComponent) 삭제 실패" : msg)
+        }
     }
 
     nonisolated func rename(from: String, to: String) throws {
         try ensureConnected()
-        let r = runRemote("mv \(q(from)) \(q(to))")
-        guard r.exitCode == 0 else { throw SFTPError.commandFailed(r.stderr) }
+        let f = q(from); let t = q(to)
+        // mv 는 대상이 있으면 조용히 덮어쓰므로 사전에 막는다
+        try runChecked("if [ -e \(t) ]; then echo '대상 이름이 이미 존재합니다' >&2; exit 1; fi; mv -- \(f) \(t)",
+                       fallback: "이름 변경 실패")
     }
 
     nonisolated func copyRemote(from: String, to: String) throws {
         try ensureConnected()
-        let r = runRemote("cp -r \(q(from)) \(q(to))")
-        guard r.exitCode == 0 else { throw SFTPError.commandFailed(r.stderr) }
+        try runChecked("cp -r -- \(q(from)) \(q(to))", fallback: "복사 실패")
     }
 
     nonisolated func createFile(path: String) throws {
         try ensureConnected()
-        let r = runRemote("touch \(q(path))")
-        guard r.exitCode == 0 else { throw SFTPError.commandFailed(r.stderr) }
+        let p = q(path)
+        // touch 는 이미 있는 파일이면 타임스탬프만 갱신하고 0을 반환한다
+        try runChecked("if [ -e \(p) ]; then echo '이미 존재합니다' >&2; exit 1; fi; touch -- \(p)",
+                       fallback: "파일 생성 실패")
+    }
+
+    /// 원격 명령 실행 후 종료 코드를 검사하고, 실패하면 stderr 를 그대로 오류로 올린다
+    nonisolated private func runChecked(_ command: String, fallback: String) throws {
+        let r = runRemote(command)
+        guard r.exitCode == 0 else {
+            let msg = r.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            throw SFTPError.commandFailed(msg.isEmpty ? fallback : msg)
+        }
     }
 
     // MARK: - Upload / Download (scp)

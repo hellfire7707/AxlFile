@@ -35,9 +35,6 @@ struct ContentView: View {
             .sheet(isPresented: Binding(get: { appState.showViewer }, set: { appState.showViewer = $0 })) {
                 if let url = appState.viewerURL { ViewerView(url: url) }
             }
-            .sheet(isPresented: Binding(get: { appState.showFTP }, set: { appState.showFTP = $0 })) {
-                SFTPConnectView().environment(appState)
-            }
             .sheet(isPresented: Binding(get: { appState.showProperties }, set: { appState.showProperties = $0 })) {
                 if let url = appState.propertiesTarget { PropertiesView(url: url) }
             }
@@ -65,6 +62,12 @@ struct ContentView: View {
             // 다이얼로그 — ZStack 최상단 레이어로 패널 테두리보다 위에 렌더링
             if appState.work != nil {
                 WorkingOverlay().environment(appState)
+            }
+            if appState.showFTP {
+                SFTPConnectView().environment(appState)
+            }
+            if let alert = appState.errorAlert {
+                ErrorAlertDialog(alert: alert) { appState.errorAlert = nil }
             }
             if let conflict = appState.overwriteConflict {
                 OverwriteConflictDialog(conflict: conflict) { action in
@@ -347,6 +350,85 @@ struct WorkProgressPanel: View {
         if b < 1_048_576     { return String(format: "%.2f KB", Double(b) / 1024) }
         if b < 1_073_741_824 { return String(format: "%.2f MB", Double(b) / 1_048_576) }
         return String(format: "%.2f GB", Double(b) / 1_073_741_824)
+    }
+}
+
+// MARK: - Error Alert Dialog
+
+struct ErrorAlertDialog: View {
+    let alert: ErrorAlert
+    var onDismiss: () -> Void
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.5)
+                .ignoresSafeArea()
+                .contentShape(Rectangle())
+                .onTapGesture { }
+            panel
+        }
+    }
+
+    private var panel: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 14))
+                    .foregroundStyle(.red)
+                Text(alert.title)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(NX.fileText)
+                Spacer()
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background(Color(hex: "#404040"))
+            .overlay(alignment: .bottom) { Rectangle().frame(height: 1).foregroundStyle(Color(hex: "#555555")) }
+
+            ScrollView {
+                Text(alert.message)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(NX.infoText)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(14)
+            }
+            .frame(maxHeight: 200)
+
+            HStack {
+                Spacer()
+                Button(action: onDismiss) {
+                    Text("확인")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 18)
+                        .padding(.vertical, 5)
+                        .background(NX.cursor)
+                        .overlay { Rectangle().strokeBorder(NX.separator, lineWidth: 1) }
+                }
+                .buttonStyle(.plain)
+                .keyboardShortcut(.return)
+            }
+            .padding(.horizontal, 14)
+            .padding(.bottom, 12)
+        }
+        .frame(width: 440)
+        .fixedSize(horizontal: false, vertical: true)
+        .background(Color(hex: "#323232"))
+        .overlay { Rectangle().strokeBorder(Color(hex: "#555555"), lineWidth: 1) }
+        .shadow(color: .black.opacity(0.8), radius: 20, x: 0, y: 8)
+        // Esc 로도 닫히도록 포커스 확보
+        .background(
+            Color.clear
+                .focusable()
+                .focused($focused)
+                .focusEffectDisabled()
+                .onKeyPress(.escape) { onDismiss(); return .handled }
+                .onKeyPress(.return) { onDismiss(); return .handled }
+        )
+        .onAppear { DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { focused = true } }
     }
 }
 
