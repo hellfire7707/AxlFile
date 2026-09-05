@@ -316,8 +316,7 @@ struct FileListView: View {
         // F2 이름 변경
         case "\u{F705}":
             if let item = tab.cursorFile {
-                appState.renameText = item.name
-                appState.showRename = true
+                appState.beginRename(item)
             }
             return .handled
 
@@ -670,8 +669,7 @@ struct FileListView: View {
         if isSingle {
             Button {
                 tab.cursorID = first.id
-                appState.renameText = first.name
-                appState.showRename = true
+                appState.beginRename(first)
             } label: {
                 Label("이름 변경 (F2)", systemImage: "pencil.line")
             }

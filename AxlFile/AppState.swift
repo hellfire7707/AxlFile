@@ -45,7 +45,8 @@ class AppState {
     var showNewFile   = false
     var newFileName   = ""
     var showRename    = false
-    var renameText    = ""
+    var renameText    = ""      // 확장자를 뺀 이름
+    var renameExt     = ""      // 확장자 (앞의 "." 제외)
     var showProperties  = false
     var propertiesTarget: URL?
 
@@ -861,10 +862,38 @@ class AppState {
         newFolderName = ""
     }
 
+    /// 파일명을 (이름, 확장자) 로 분리. 폴더·닷파일·확장자 없는 파일은 확장자가 빈 문자열.
+    static func splitName(_ name: String, isDirectory: Bool) -> (base: String, ext: String) {
+        guard !isDirectory,
+              let dot = name.lastIndex(of: "."),
+              dot != name.startIndex,                       // ".gitignore" 같은 닷파일 제외
+              dot != name.index(before: name.endIndex)      // "name." 처럼 끝이 점이면 제외
+        else { return (name, "") }
+        return (String(name[name.startIndex..<dot]), String(name[name.index(after: dot)...]))
+    }
+
+    /// 이름 변경 다이얼로그 열기 — 이름/확장자를 분리해 채운다.
+    func beginRename(_ item: FileItem) {
+        guard !item.isParentDir else { return }
+        let (base, ext) = Self.splitName(item.name, isDirectory: item.isDirectory)
+        renameText   = base
+        renameExt    = ext
+        showRename   = true
+    }
+
+    /// 다이얼로그의 이름 + 확장자를 합친 최종 파일명
+    var renameFullName: String {
+        let base = renameText.trimmingCharacters(in: .whitespaces)
+        let ext  = renameExt.trimmingCharacters(in: .whitespaces)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        guard !ext.isEmpty else { return base }
+        return base.isEmpty ? "." + ext : base + "." + ext
+    }
+
     func renameActive() {
         guard let tab = activePane.activeTab,
               let item = tab.cursorFile else { return }
-        let newName = renameText.trimmingCharacters(in: .whitespaces)
+        let newName = renameFullName
         guard !newName.isEmpty, newName != item.name else { return }
 
         if let client = tab.sftpClient {

@@ -23,15 +23,6 @@ struct ContentView: View {
                 FunctionKeyBar()
                     .environment(appState)
             }
-            .sheet(isPresented: Binding(get: { appState.showNewFolder }, set: { appState.showNewFolder = $0 })) {
-                NewFolderDialog().environment(appState)
-            }
-            .sheet(isPresented: Binding(get: { appState.showNewFile }, set: { appState.showNewFile = $0 })) {
-                NewFileDialog().environment(appState)
-            }
-            .sheet(isPresented: Binding(get: { appState.showRename }, set: { appState.showRename = $0 })) {
-                RenameDialog().environment(appState)
-            }
             .sheet(isPresented: Binding(get: { appState.showViewer }, set: { appState.showViewer = $0 })) {
                 if let url = appState.viewerURL { ViewerView(url: url) }
             }
@@ -49,17 +40,24 @@ struct ContentView: View {
             .sheet(isPresented: Binding(get: { appState.showPermissions }, set: { appState.showPermissions = $0 })) {
                 if let url = appState.permissionsTarget { PermissionsView(url: url) }
             }
-            .sheet(isPresented: Binding(get: { appState.showZipName }, set: { appState.showZipName = $0 })) {
-                ZipNameDialog().environment(appState)
-            }
-            .sheet(isPresented: Binding(
-                get: { appState.showDeleteConfirm },
-                set: { appState.showDeleteConfirm = $0 }
-            )) {
-                DeleteConfirmDialog().environment(appState)
-            }
 
             // 다이얼로그 — ZStack 최상단 레이어로 패널 테두리보다 위에 렌더링
+            //              (시트를 쓰면 창 모서리가 둥글게 잘리므로 각진 오버레이로 표시)
+            if appState.showNewFolder {
+                NewFolderDialog().environment(appState)
+            }
+            if appState.showNewFile {
+                NewFileDialog().environment(appState)
+            }
+            if appState.showRename {
+                RenameDialog().environment(appState)
+            }
+            if appState.showZipName {
+                ZipNameDialog().environment(appState)
+            }
+            if appState.showDeleteConfirm {
+                DeleteConfirmDialog().environment(appState)
+            }
             if appState.work != nil {
                 WorkingOverlay().environment(appState)
             }
@@ -161,8 +159,7 @@ struct FunctionKeyBar: View {
                 // F2 이름 변경
                 fKey("F2", "Rename", disabled: appState.activePane.activeTab?.cursorFile == nil) {
                     if let item = appState.activePane.activeTab?.cursorFile {
-                        appState.renameText = item.name
-                        appState.showRename = true
+                        appState.beginRename(item)
                     }
                 }
                 div()
@@ -447,42 +444,38 @@ struct DeleteConfirmDialog: View {
     }
 
     var body: some View {
-        VStack(spacing: 20) {
-            Image(systemName: "trash")
-                .font(.system(size: 28))
-                .foregroundStyle(.red)
+        NXDialogPanel(title: "삭제 확인", icon: "trash", iconColor: .red, width: 380) {
+            VStack(alignment: .leading, spacing: 14) {
+                Text(title)
+                    .font(.system(size: 12))
+                    .foregroundStyle(NX.fileText)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
-            Text(title)
-                .font(.headline)
-                .multilineTextAlignment(.center)
-
-            HStack(spacing: 12) {
-                dialogBtn("취소", isSelected: selected == 0, isDestructive: false) {
-                    cancel()
-                }
-                dialogBtn("삭제", isSelected: selected == 1, isDestructive: true) {
-                    confirm()
+                HStack(spacing: 8) {
+                    Spacer()
+                    dialogBtn("취소", isSelected: selected == 0, isDestructive: false) { cancel() }
+                    dialogBtn("삭제", isSelected: selected == 1, isDestructive: true) { confirm() }
                 }
             }
-        }
-        .padding(28)
-        .frame(width: 340)
-        // 포커스용 투명 뷰로 키보드 이벤트 수신
-        .background(
-            Color.clear
-                .focusable()
-                .focused($focused)
-                .onKeyPress(.leftArrow)  { selected = 0; return .handled }
-                .onKeyPress(.rightArrow) { selected = 1; return .handled }
-                .onKeyPress(.return) {
-                    if selected == 1 { confirm() } else { cancel() }
-                    return .handled
-                }
-                .onKeyPress(.escape) { cancel(); return .handled }
-        )
-        .onAppear {
-            selected = 0       // 기본값: 취소 선택 (안전)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { focused = true }
+            // 포커스용 투명 뷰로 키보드 이벤트 수신
+            .background(
+                Color.clear
+                    .focusable()
+                    .focused($focused)
+                    .focusEffectDisabled()
+                    .onKeyPress(.leftArrow)  { selected = 0; return .handled }
+                    .onKeyPress(.rightArrow) { selected = 1; return .handled }
+                    .onKeyPress(.return) {
+                        if selected == 1 { confirm() } else { cancel() }
+                        return .handled
+                    }
+                    .onKeyPress(.escape) { cancel(); return .handled }
+            )
+            .onAppear {
+                selected = 0       // 기본값: 취소 선택 (안전)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { focused = true }
+            }
         }
     }
 
@@ -491,19 +484,15 @@ struct DeleteConfirmDialog: View {
                            isDestructive: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Text(label)
-                .font(.system(size: 13, weight: isSelected ? .semibold : .regular))
-                .frame(width: 80, height: 28)
+                .font(.system(size: 11, weight: isSelected ? .semibold : .medium))
+                .frame(width: 76, height: 24)
                 .foregroundStyle(isSelected
                     ? (isDestructive ? .white : NX.fileText)
                     : NX.infoText)
                 .background(isSelected
-                    ? (isDestructive ? Color.red : NX.cursor)
+                    ? (isDestructive ? Color.red.opacity(0.85) : NX.cursor)
                     : NX.headerBg)
-                .clipShape(RoundedRectangle(cornerRadius: 5))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 5)
-                        .strokeBorder(isSelected ? Color.clear : NX.separator, lineWidth: 1)
-                }
+                .overlay { Rectangle().strokeBorder(NX.separator, lineWidth: 1) }
         }
         .buttonStyle(.plain)
     }
@@ -519,39 +508,149 @@ struct DeleteConfirmDialog: View {
     }
 }
 
+// MARK: - 공통 다이얼로그 크롬 (각진 패널 — 라운드 없음)
+
+/// 딤 배경 + 타이틀 바 + 각진 테두리를 가진 오버레이 패널.
+struct NXDialogPanel<Content: View>: View {
+    let title: String
+    var icon: String?
+    var iconColor: Color
+    var width: CGFloat
+    let content: Content
+
+    init(title: String, icon: String? = nil, iconColor: Color = NX.folderText,
+         width: CGFloat = 360, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.icon = icon
+        self.iconColor = iconColor
+        self.width = width
+        self.content = content()
+    }
+
+    var body: some View {
+        ZStack {
+            // 뒤쪽 UI를 가리는 딤 배경 (클릭 차단)
+            Color.black.opacity(0.5)
+                .ignoresSafeArea()
+                .contentShape(Rectangle())
+                .onTapGesture { }
+
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: 7) {
+                    if let icon {
+                        Image(systemName: icon)
+                            .font(.system(size: 12))
+                            .foregroundStyle(iconColor)
+                    }
+                    Text(title)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(NX.fileText)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .background(Color(hex: "#404040"))
+                .overlay(alignment: .bottom) {
+                    Rectangle().frame(height: 1).foregroundStyle(Color(hex: "#555555"))
+                }
+
+                content
+                    .padding(12)
+            }
+            .frame(width: width)
+            // 세로는 내용 크기로 고정 — ZStack 안에서 화면 전체로 늘어나지 않도록
+            .fixedSize(horizontal: false, vertical: true)
+            .background(Color(hex: "#323232"))
+            .overlay { Rectangle().strokeBorder(Color(hex: "#555555"), lineWidth: 1) }
+            .shadow(color: .black.opacity(0.8), radius: 20, x: 0, y: 8)
+        }
+    }
+}
+
+/// 각진 다이얼로그 버튼
+struct NXDialogButton: View {
+    let label: String
+    var prominent = false
+    var destructive = false
+    var disabled = false
+    let action: () -> Void
+
+    init(_ label: String, prominent: Bool = false, destructive: Bool = false,
+         disabled: Bool = false, action: @escaping () -> Void) {
+        self.label = label
+        self.prominent = prominent
+        self.destructive = destructive
+        self.disabled = disabled
+        self.action = action
+    }
+
+    private var bg: Color {
+        if disabled { return NX.headerBg }
+        if destructive { return Color.red.opacity(0.85) }
+        return prominent ? NX.cursor : NX.headerBg
+    }
+
+    var body: some View {
+        Button(action: action) {
+            Text(label)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(disabled ? NX.attrText
+                                 : ((prominent || destructive) ? .white : NX.fileText))
+                .padding(.horizontal, 14)
+                .padding(.vertical, 5)
+                .background(bg)
+                .overlay { Rectangle().strokeBorder(NX.separator, lineWidth: 1) }
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+    }
+}
+
+/// 다이얼로그 입력 필드 레이블
+struct NXFieldLabel: View {
+    let text: String
+    init(_ text: String) { self.text = text }
+    var body: some View {
+        Text(text)
+            .font(.system(size: 10))
+            .foregroundStyle(NX.headerText)
+    }
+}
+
 // MARK: - New File Dialog
 
 struct NewFileDialog: View {
     @Environment(AppState.self) private var appState
     @FocusState private var focused: Bool
 
+    private var isEmpty: Bool {
+        appState.newFileName.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
     var body: some View {
-        VStack(spacing: 16) {
-            HStack(spacing: 10) {
-                Image(systemName: "doc.badge.plus")
-                    .font(.title2)
-                    .foregroundStyle(NX.folderText)
-                Text("새 파일 만들기").font(.headline)
+        NXDialogPanel(title: "새 파일 만들기", icon: "doc.badge.plus", width: 380) {
+            VStack(alignment: .leading, spacing: 10) {
+                TextField("파일 이름 (예: memo.txt)", text: Binding(
+                    get: { appState.newFileName },
+                    set: { appState.newFileName = $0 }
+                ))
+                .focused($focused)
+                .textFieldStyle(.squareBorder)
+                .focusEffectDisabled()
+                .overlay { Rectangle().strokeBorder(focused ? NX.focusBorder : .clear, lineWidth: 1) }
+                .onSubmit { confirm() }
+
+                HStack(spacing: 8) {
+                    Spacer()
+                    NXDialogButton("취소") { appState.showNewFile = false }
+                        .keyboardShortcut(.escape)
+                    NXDialogButton("만들기", prominent: true, disabled: isEmpty) { confirm() }
+                        .keyboardShortcut(.return)
+                }
             }
-            TextField("파일 이름 (예: memo.txt)", text: Binding(
-                get: { appState.newFileName },
-                set: { appState.newFileName = $0 }
-            ))
-            .focused($focused)
-            .textFieldStyle(.roundedBorder)
-            .frame(width: 300)
-            .onSubmit { confirm() }
-            HStack {
-                Button("취소") { appState.showNewFile = false }
-                    .keyboardShortcut(.escape)
-                Button("만들기") { confirm() }
-                    .keyboardShortcut(.return)
-                    .buttonStyle(.borderedProminent)
-                    .disabled(appState.newFileName.trimmingCharacters(in: .whitespaces).isEmpty)
-            }
+            // 시트가 아니므로 패널 뒤 파일목록으로 키가 새지 않도록 입력 필드에 포커스
+            .onAppear { DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { focused = true } }
         }
-        .padding(24)
-        .onAppear { focused = true }
     }
 
     private func confirm() {
@@ -567,26 +666,39 @@ struct NewFolderDialog: View {
     @Environment(AppState.self) private var appState
     @FocusState private var focused: Bool
 
+    private var isEmpty: Bool {
+        appState.newFolderName.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
     var body: some View {
-        VStack(spacing: 16) {
-            Text("새 폴더 만들기").font(.headline)
-            TextField("폴더 이름", text: Binding(
-                get: { appState.newFolderName },
-                set: { appState.newFolderName = $0 }
-            ))
-            .focused($focused)
-            .textFieldStyle(.roundedBorder)
-            .frame(width: 280)
-            .onSubmit { appState.createFolder(); appState.showNewFolder = false }
-            HStack {
-                Button("취소") { appState.showNewFolder = false }.keyboardShortcut(.escape)
-                Button("만들기") { appState.createFolder(); appState.showNewFolder = false }
-                    .keyboardShortcut(.return)
-                    .buttonStyle(.borderedProminent)
+        NXDialogPanel(title: "새 폴더 만들기", icon: "folder.badge.plus", width: 360) {
+            VStack(alignment: .leading, spacing: 10) {
+                TextField("폴더 이름", text: Binding(
+                    get: { appState.newFolderName },
+                    set: { appState.newFolderName = $0 }
+                ))
+                .focused($focused)
+                .textFieldStyle(.squareBorder)
+                .focusEffectDisabled()
+                .overlay { Rectangle().strokeBorder(focused ? NX.focusBorder : .clear, lineWidth: 1) }
+                .onSubmit { confirm() }
+
+                HStack(spacing: 8) {
+                    Spacer()
+                    NXDialogButton("취소") { appState.showNewFolder = false }
+                        .keyboardShortcut(.escape)
+                    NXDialogButton("만들기", prominent: true, disabled: isEmpty) { confirm() }
+                        .keyboardShortcut(.return)
+                }
             }
+            .onAppear { DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { focused = true } }
         }
-        .padding(24)
-        .onAppear { focused = true }
+    }
+
+    private func confirm() {
+        guard !isEmpty else { return }
+        appState.createFolder()
+        appState.showNewFolder = false
     }
 }
 
@@ -596,33 +708,33 @@ struct ZipNameDialog: View {
     @Environment(AppState.self) private var appState
     @FocusState private var focused: Bool
 
+    private var isEmpty: Bool {
+        appState.zipNameText.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
     var body: some View {
-        VStack(spacing: 16) {
-            HStack(spacing: 10) {
-                Image(systemName: "archivebox.fill")
-                    .font(.title2)
-                    .foregroundStyle(NX.folderText)
-                Text("ZIP 압축").font(.headline)
+        NXDialogPanel(title: "ZIP 압축", icon: "archivebox.fill", width: 380) {
+            VStack(alignment: .leading, spacing: 10) {
+                TextField("압축 파일 이름", text: Binding(
+                    get: { appState.zipNameText },
+                    set: { appState.zipNameText = $0 }
+                ))
+                .focused($focused)
+                .textFieldStyle(.squareBorder)
+                .focusEffectDisabled()
+                .overlay { Rectangle().strokeBorder(focused ? NX.focusBorder : .clear, lineWidth: 1) }
+                .onSubmit { confirm() }
+
+                HStack(spacing: 8) {
+                    Spacer()
+                    NXDialogButton("취소") { appState.showZipName = false }
+                        .keyboardShortcut(.escape)
+                    NXDialogButton("압축", prominent: true, disabled: isEmpty) { confirm() }
+                        .keyboardShortcut(.return)
+                }
             }
-            TextField("압축 파일 이름", text: Binding(
-                get: { appState.zipNameText },
-                set: { appState.zipNameText = $0 }
-            ))
-            .focused($focused)
-            .textFieldStyle(.roundedBorder)
-            .frame(width: 300)
-            .onSubmit { confirm() }
-            HStack {
-                Button("취소") { appState.showZipName = false }
-                    .keyboardShortcut(.escape)
-                Button("압축") { confirm() }
-                    .keyboardShortcut(.return)
-                    .buttonStyle(.borderedProminent)
-                    .disabled(appState.zipNameText.trimmingCharacters(in: .whitespaces).isEmpty)
-            }
+            .onAppear { DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { focused = true } }
         }
-        .padding(24)
-        .onAppear { focused = true }
     }
 
     private func confirm() {
@@ -636,28 +748,74 @@ struct ZipNameDialog: View {
 // MARK: - Rename Dialog
 
 struct RenameDialog: View {
+    private enum Field { case base, ext }
+
     @Environment(AppState.self) private var appState
-    @FocusState private var focused: Bool
+    @FocusState private var focused: Field?
 
     var body: some View {
-        VStack(spacing: 16) {
-            Text("이름 변경").font(.headline)
-            TextField("새 이름", text: Binding(
-                get: { appState.renameText },
-                set: { appState.renameText = $0 }
-            ))
-            .focused($focused)
-            .textFieldStyle(.roundedBorder)
-            .frame(width: 280)
-            .onSubmit { appState.renameActive(); appState.showRename = false }
-            HStack {
-                Button("취소") { appState.showRename = false }.keyboardShortcut(.escape)
-                Button("변경") { appState.renameActive(); appState.showRename = false }
-                    .keyboardShortcut(.return)
-                    .buttonStyle(.borderedProminent)
+        NXDialogPanel(title: "이름 변경", icon: "pencil.line", width: 420) {
+            VStack(alignment: .leading, spacing: 10) {
+                // 이름 / 확장자 분리 입력 — Tab 으로 이동
+                HStack(alignment: .bottom, spacing: 5) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        NXFieldLabel("이름")
+                        TextField("이름", text: Binding(
+                            get: { appState.renameText },
+                            set: { appState.renameText = $0 }
+                        ))
+                        .focused($focused, equals: .base)
+                        .textFieldStyle(.squareBorder)
+                        .focusEffectDisabled()
+                        .overlay { Rectangle().strokeBorder(focused == .base ? NX.focusBorder : .clear, lineWidth: 1) }
+                        .onSubmit(confirm)
+                    }
+
+                    Text(".")
+                        .font(.system(size: 11))
+                        .foregroundStyle(NX.infoText)
+                        .padding(.bottom, 4)
+
+                    VStack(alignment: .leading, spacing: 3) {
+                        NXFieldLabel("확장자")
+                        TextField("확장자", text: Binding(
+                            get: { appState.renameExt },
+                            set: { appState.renameExt = $0 }
+                        ))
+                        .focused($focused, equals: .ext)
+                        .textFieldStyle(.squareBorder)
+                        .focusEffectDisabled()
+                        .overlay { Rectangle().strokeBorder(focused == .ext ? NX.focusBorder : .clear, lineWidth: 1) }
+                        .frame(width: 96)
+                        .onSubmit(confirm)
+                    }
+                }
+
+                // 합쳐진 최종 이름 미리보기
+                Text(appState.renameFullName)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(NX.infoText)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                HStack(spacing: 8) {
+                    Spacer()
+                    NXDialogButton("취소") { appState.showRename = false }
+                        .keyboardShortcut(.escape)
+                    NXDialogButton("변경", prominent: true,
+                                   disabled: appState.renameFullName.isEmpty) { confirm() }
+                        .keyboardShortcut(.return)
+                }
             }
+            // 시트가 아니므로 패널 뒤 파일목록으로 키가 새지 않도록 첫 필드에 포커스
+            .onAppear { DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { focused = .base } }
         }
-        .padding(24)
-        .onAppear { focused = true }
+    }
+
+    private func confirm() {
+        guard !appState.renameFullName.isEmpty else { return }
+        appState.renameActive()
+        appState.showRename = false
     }
 }

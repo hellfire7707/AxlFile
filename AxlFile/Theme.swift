@@ -52,6 +52,7 @@ enum NX {
 
     // ── Borders / Separators ─────────────────────────
     static let separator    = Color(hex: "#383838")
+    static let focusBorder  = Color(hex: "#8A8A8A")  // 다이얼로그 입력 필드 포커스 (파란 링 대체)
 }
 
 extension Color {
