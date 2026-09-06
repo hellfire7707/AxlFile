@@ -8,9 +8,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # Xcode 경로 설정 (최초 1회)
 sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
 
+# 서명 인증서 생성 (최초 1회) — TCC 권한 유지를 위해 고정 인증서로 서명한다.
+# ad-hoc("-") 서명은 빌드마다 cdhash 가 바뀌어 다운로드/데스크탑/문서 폴더
+# 접근 허용 창이 매번 다시 뜬다.
+./scripts/create-signing-identity.sh
+
 # Release 아카이브 빌드
 xcodebuild -project AxlFile.xcodeproj -scheme AxlFile -configuration Release \
-  -archivePath build/AxlFile.xcarchive archive CODE_SIGN_IDENTITY="-"
+  -archivePath build/AxlFile.xcarchive archive CODE_SIGN_IDENTITY="AxlFile Self Signed"
 
 # DMG 생성 (배경 이미지 + 드래그-to-Applications 설치 방식)
 APP=$(find build/AxlFile.xcarchive -name "AxlFile.app" -type d | head -1)
