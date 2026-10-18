@@ -299,3 +299,37 @@ class PaneState {
         activeIndex = max(0, min(activeIndex, tabs.count - 1))
     }
 }
+
+// MARK: - 디스크 여유 공간
+
+/// 볼륨 용량 조회 — Finder·저장 공간 설정과 같은 기준(10진 단위, df 와 동일한 가용량)을 쓴다.
+enum DiskSpace {
+    /// 해당 경로가 속한 볼륨의 여유 바이트. 실패 시 0.
+    static func free(at url: URL) -> Int64 {
+        let res = try? url.resourceValues(forKeys: [.volumeAvailableCapacityKey])
+        return Int64(res?.volumeAvailableCapacity ?? 0)
+    }
+
+    /// 볼륨의 (전체, 여유) 바이트
+    static func capacity(at url: URL) -> (total: Int64, free: Int64) {
+        let keys: Set<URLResourceKey> = [.volumeTotalCapacityKey, .volumeAvailableCapacityKey]
+        let res = try? url.resourceValues(forKeys: keys)
+        return (Int64(res?.volumeTotalCapacity ?? 0), Int64(res?.volumeAvailableCapacity ?? 0))
+    }
+
+    /// 여유 공간 갱신 주기 (초) — 파일 작업·빌드 등으로 수시로 바뀌므로 주기적으로 다시 읽는다.
+    static let refreshInterval: TimeInterval = 10
+}
+
+/// 용량 표기. macOS(Finder·저장 공간 설정)와 동일하게 10진(1000) 단위를 쓴다.
+/// 1024 로 나누면서 GB 라고 쓰면 같은 디스크가 약 7% 작게 보인다.
+enum ByteSize {
+    static func string(_ bytes: Int64) -> String {
+        if bytes <= 0              { return "0 B" }
+        if bytes < 1_000           { return "\(bytes) B" }
+        if bytes < 1_000_000       { return String(format: "%.1f KB", Double(bytes) / 1_000) }
+        if bytes < 1_000_000_000   { return String(format: "%.1f MB", Double(bytes) / 1_000_000) }
+        if bytes < 1_000_000_000_000 { return String(format: "%.2f GB", Double(bytes) / 1_000_000_000) }
+        return String(format: "%.2f TB", Double(bytes) / 1_000_000_000_000)
+    }
+}

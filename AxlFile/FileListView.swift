@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 import UniformTypeIdentifiers
 import AppKit
 import QuickLookThumbnailing
@@ -54,6 +55,10 @@ struct FileListView: View {
         .focusEffectDisabled()          // 시스템 파란 포커스 링 제거 (활성 패널은 탭 색으로 표시)
         .onKeyPress { handleKey($0) }
         .task { await loadDrives() }
+        // 여유 공간은 수시로 바뀌므로 주기적으로 다시 읽는다
+        .onReceive(Timer.publish(every: DiskSpace.refreshInterval, on: .main, in: .common).autoconnect()) { _ in
+            Task { await loadDrives() }
+        }
         .onReceive(NSWorkspace.shared.notificationCenter
             .publisher(for: NSWorkspace.didMountNotification)) { _ in Task { await loadDrives() } }
         .onReceive(NSWorkspace.shared.notificationCenter

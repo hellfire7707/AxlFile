@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 import AppKit
 
 // MARK: - PaneView
@@ -450,7 +451,7 @@ struct FolderInfoBar: View {
 
             // 여유 공간
             if diskFree > 0 {
-                Text("여유 \(fmtSize(diskFree))")
+                Text("여유 \(ByteSize.string(diskFree))")
                     .font(.system(size: 11))
                     .foregroundStyle(NX.infoText)
             }
@@ -461,10 +462,11 @@ struct FolderInfoBar: View {
         .overlay(alignment: .bottom) {
             Rectangle().frame(height: 1).foregroundStyle(NX.separator)
         }
-        .task(id: tab.url) {
-            let path = tab.url.path
-            let attrs = (try? FileManager.default.attributesOfFileSystem(forPath: path)) ?? [:]
-            diskFree = (attrs[.systemFreeSize] as? Int64) ?? 0
+        .task(id: tab.url) { diskFree = DiskSpace.free(at: tab.url) }
+        // 파일 작업·빌드 등으로 수시로 바뀌므로 주기적으로 다시 읽는다.
+        // (폴더 이동 시에만 읽으면 좌우 패널이 서로 다른 시점의 값을 보여준다)
+        .onReceive(Timer.publish(every: DiskSpace.refreshInterval, on: .main, in: .common).autoconnect()) { _ in
+            diskFree = DiskSpace.free(at: tab.url)
         }
     }
 
@@ -555,10 +557,8 @@ struct VolumeInfo: Identifiable {
     let freeBytes: Int64
 
     var freeString: String {
-        let b = freeBytes
-        if b <= 0 { return "" }
-        if b < 1_073_741_824 { return String(format: "%.1f MB 남음", Double(b)/1_048_576) }
-        return String(format: "%.1f GB 남음", Double(b)/1_073_741_824)
+        guard freeBytes > 0 else { return "" }
+        return "\(ByteSize.string(freeBytes)) 남음"
     }
 
     var usedRatio: Double {
@@ -606,7 +606,8 @@ struct DriveRowView: View {
                 Text(vol.freeString)
                     .font(.system(size: 10))
                     .foregroundStyle(NX.infoText)
-                    .frame(width: 80, alignment: .trailing)
+                    .lineLimit(1)
+                    .frame(width: 92, alignment: .trailing)
             }
         }
         .padding(.horizontal, 8)
