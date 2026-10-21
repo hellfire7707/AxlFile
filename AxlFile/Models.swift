@@ -185,8 +185,15 @@ class TabInfo: Identifiable {
     var url: URL
     var files: [FileItem] = []
     var selectedIDs: Set<UUID> = []
-    var cursorID: UUID?
-    var driveCursorIndex: Int? = nil
+
+    // 커서는 파일 목록과 드라이브 목록 중 한쪽에만 존재한다.
+    // (둘 다 설정되면 커서가 두 개로 보이고 방향키 이동이 엉킨다)
+    var cursorID: UUID? {
+        didSet { if cursorID != nil { driveCursorIndex = nil } }
+    }
+    var driveCursorIndex: Int? = nil {
+        didSet { if driveCursorIndex != nil { cursorID = nil } }
+    }
     var sortField: SortField = .name
     var sortAscending = true
     var isLoading = false

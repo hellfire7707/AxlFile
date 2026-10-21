@@ -256,6 +256,7 @@ class AppState {
         }
         tab.url = url
         tab.selectedIDs = []
+        tab.driveCursorIndex = nil      // 커서는 새 디렉토리의 파일 목록으로 넘어간다
         if url.scheme != "sftp" {
             UserDefaults.standard.set(url.path, forKey: "lastOpenedPath")
         }
@@ -269,6 +270,7 @@ class AppState {
         tab.historyForward.append(tab.url)
         tab.url = prev
         tab.selectedIDs = []
+        tab.driveCursorIndex = nil
         Task { await loadTab(tab) }
     }
 
@@ -277,6 +279,7 @@ class AppState {
         tab.historyBack.append(tab.url)
         tab.url = next
         tab.selectedIDs = []
+        tab.driveCursorIndex = nil
         Task { await loadTab(tab) }
     }
 

@@ -256,7 +256,6 @@ struct FileListView: View {
         case .return:
             if let di = tab.driveCursorIndex, di < driveVolumes.count {
                 appState.navigate(tab: tab, to: driveVolumes[di].url)
-                tab.driveCursorIndex = nil
             } else if let item = tab.cursorFile {
                 openItem(item)
             }
@@ -428,11 +427,8 @@ struct FileListView: View {
         tab.selectedIDs  = []
     }
 
-    // 더블 클릭: 드라이브로 이동
+    // 더블 클릭: 드라이브로 이동 (커서는 진입한 폴더의 첫 항목으로 넘어간다)
     private func openDrive(idx: Int, vol: VolumeInfo) {
-        tab.driveCursorIndex = idx
-        tab.cursorID     = nil
-        tab.selectedIDs  = []
         appState.navigate(tab: tab, to: vol.url)
     }
 
@@ -441,12 +437,19 @@ struct FileListView: View {
                                        .volumeAvailableCapacityKey]
         let urls = FileManager.default.mountedVolumeURLs(
             includingResourceValuesForKeys: keys, options: [.skipHiddenVolumes]) ?? []
-        driveVolumes = urls.compactMap { url -> VolumeInfo? in
+        let vols = urls.compactMap { url -> VolumeInfo? in
             let res = try? url.resourceValues(forKeys: Set(keys))
             let name = res?.volumeName ?? url.lastPathComponent
             let total = Int64(res?.volumeTotalCapacity ?? 0)
             let free  = Int64(res?.volumeAvailableCapacity ?? 0)
             return VolumeInfo(url: url, name: name, totalBytes: total, freeBytes: free)
+        }
+        // 주기적으로 다시 읽으므로 값이 그대로면 갱신하지 않는다 (행 재생성·아이콘 재로드 방지)
+        guard vols != driveVolumes else { return }
+        driveVolumes = vols
+        // 언마운트로 목록이 줄면 커서가 범위를 벗어날 수 있다
+        if let di = tab.driveCursorIndex, di >= vols.count {
+            tab.driveCursorIndex = vols.isEmpty ? nil : vols.count - 1
         }
     }
 
@@ -467,8 +470,10 @@ struct FileListView: View {
     }
 
     private func currentLinearIndex(fileCount: Int) -> Int {
-        if let di = tab.driveCursorIndex { return fileCount + min(di, driveVolumes.count - 1) }
         if let cid = tab.cursorID, let fi = files.firstIndex(where: { $0.id == cid }) { return fi }
+        if let di = tab.driveCursorIndex, !driveVolumes.isEmpty {
+            return fileCount + min(di, driveVolumes.count - 1)
+        }
         return 0
     }
 

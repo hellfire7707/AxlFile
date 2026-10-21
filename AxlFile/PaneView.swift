@@ -549,8 +549,9 @@ struct PaneFileInfoBar: View {
     }
 }
 
-struct VolumeInfo: Identifiable {
-    let id = UUID()
+struct VolumeInfo: Identifiable, Equatable {
+    // 목록을 주기적으로 다시 읽어도 행 ID 가 유지되도록 경로를 ID 로 쓴다
+    var id: String { url.path }
     let url: URL
     let name: String
     let totalBytes: Int64
